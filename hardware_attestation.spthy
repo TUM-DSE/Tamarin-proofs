@@ -1,0 +1,273 @@
+
+/*
+*  Author: Julian Pritzi
+*  Model Name: hardware attestation
+*  Status: DEVELOPMENTAL
+*
+*  Comments: This simplified model assumes a single ICU 
+*/
+
+theory HardwareAttestation
+begin
+
+builtins: hashing, signing, diffie-hellman
+
+/*********************************************************************/
+/* Rules for setting up initial state                                */
+/*********************************************************************/
+rule initialize_environment:
+    let
+      kernel_pub = pk(~kernel_priv)
+      icu_pub = pk(~icu_priv)
+      kernel_cert = <'cert', $Kernel, kernel_pub, sign(<$Kernel, kernel_pub>, ~ca_priv)>
+      icu_cert = <'cert', $ICU, icu_pub, sign(<$ICU, icu_pub>, ~ca_priv)>
+    in
+    [ Fr(~ca_priv), Fr(~kernel_priv), Fr(~icu_priv) ]
+  --[ OnlyOnce(), KernelKey(~kernel_priv), IcuKey(~icu_priv) ]->
+    [ 
+      !CaPriv(~ca_priv),
+      !CaPub(pk(~ca_priv)), 
+      !PrivKey($Kernel, ~kernel_priv),
+      !PrivKey($ICU, ~icu_priv),
+      !Certificate($Kernel, kernel_cert),
+      !Certificate($ICU, icu_cert),
+      
+      Out(pk(~ca_priv)),
+      Out(pk(kernel_cert)),
+      Out(pk(icu_cert))
+    ]
+
+/*********************************************************************/
+/* Rules modeling the messages sent between Kernel and ICU           */
+/*********************************************************************/
+rule kernel_to_icu_1:
+    let 
+      n_kernel_sig_k = sign(~n_kernel, kernel_priv)
+    in
+    [ 
+      Fr(~n_kernel),
+
+      !PrivKey($Kernel, kernel_priv),
+      !Certificate($Kernel, kernel_cert)
+    ]
+  --[  
+      ProtocolStep('1'),
+      BehaveKernel($Kernel) 
+    ]->
+    [ 
+      Kernel_memory_1($Kernel, ~n_kernel),
+      Out( <'1', ~n_kernel, n_kernel_sig_k, kernel_cert> )
+    ]
+
+rule icu_to_kernel_1:
+    let
+      n_kernel_sig_i = sign(n_kernel, icu_priv)
+      n_kernel_valid = verify(n_kernel_sig_k, n_kernel, kernel_pub)
+
+      n_icu_sig_i = sign(~n_icu, icu_priv)
+
+      kernel_cert = <'cert', kernel, kernel_pub, kernel_sig>
+      kernel_cert_valid = verify(kernel_sig, <kernel, kernel_pub>, ca_pub)
+
+      dh_icu_pub = 'g' ^ ~dh_icu_priv
+      dh_icu_pub_sig = sign(dh_icu_pub, icu_priv)
+    in
+    [ 
+      Fr(~n_icu), Fr(~dh_icu_priv),
+
+      In( <'1', n_kernel, n_kernel_sig_k, <'cert', kernel, kernel_pub, kernel_sig>> ),
+      
+      !PrivKey($ICU, icu_priv),
+      !Certificate($ICU, icu_cert),
+      !CaPub(ca_pub)
+    ]
+  --[ 
+      Eq(kernel_cert_valid, true),
+      Eq(n_kernel_valid, true),
+      NotEq($ICU, kernel), 
+
+      ProtocolStep('2'),
+      BehaveICU($ICU) 
+    ]->
+    [ 
+      Icu_memory_1($ICU, ~dh_icu_priv, kernel_cert, ~n_icu),
+      Out( <'2', ~n_icu, n_icu_sig_i, n_kernel_sig_i, dh_icu_pub, dh_icu_pub_sig, icu_cert> )
+    ]
+
+rule kernel_to_icu_2:
+    let 
+      n_kernel_valid = verify(n_kernel_sig_i, n_kernel, icu_pub)
+      
+      n_icu_valid = verify(n_icu_sig_i, n_icu, icu_pub)
+      n_icu_sig_k = sign(n_icu, kernel_priv)
+
+      icu_cert = <'cert', icu, icu_pub, icu_sig>
+      icu_cert_valid = verify(icu_sig, <icu, icu_pub>, ca_pub)
+
+      dh_kernel_pub = 'g' ^ ~dh_kernel_priv
+      dh_kernel_pub_sig = sign(dh_kernel_pub, kernel_priv)
+
+      dh_icu_valid = verify(dh_icu_pub_sig, dh_icu_pub, icu_pub)
+      dh_common = dh_icu_pub ^ ~dh_kernel_priv
+    in
+    [ 
+      Kernel_memory_1($Kernel, n_kernel),
+      Fr(~dh_kernel_priv),
+
+      In( <'2', n_icu, n_icu_sig_i, n_kernel_sig_i, dh_icu_pub, dh_icu_pub_sig, <'cert', icu, icu_pub, icu_sig>>),
+      
+      !PrivKey($Kernel, kernel_priv),
+      !CaPub(ca_pub)
+    ]
+  --[ 
+      Eq(n_kernel_valid, true),
+      Eq(icu_cert_valid, true),
+      Eq(n_icu_valid, true),
+      Eq(dh_icu_valid, true),
+      NotEq($Kernel, icu), 
+
+      KernelDone($Kernel, icu, dh_common),
+
+      ProtocolStep('3'),
+      BehaveKernel($Kernel)
+    ]->
+    [ 
+      Out(<'3', n_icu_sig_k, dh_kernel_pub, dh_kernel_pub_sig>)
+    ]
+
+rule icu_to_kernel_2:
+    let 
+      n_icu_valid = verify(n_icu_sig_k, n_icu, kernel_pub)
+
+      dh_kernel_valid = verify(dh_kernel_pub_sig, dh_kernel_pub, kernel_pub)
+      dh_common = dh_kernel_pub ^ dh_icu_priv
+    in
+    [ 
+      Icu_memory_1($ICU, dh_icu_priv, <'cert', kernel, kernel_pub, kernel_sig>, n_icu),
+
+      In(<'3', n_icu_sig_k, dh_kernel_pub, dh_kernel_pub_sig>)
+    ]
+  --[ 
+      Eq(n_icu_valid, true),
+      Eq(dh_kernel_valid, true),
+      NotEq($ICU, kernel), 
+
+      ICUDone($ICU, kernel, dh_common),
+      
+      ProtocolStep('4'),
+      BehaveICU($ICU) 
+    ]-> 
+    [ ]
+
+/*********************************************************************/
+/* Restrictions that can be used by rules for contolling transitions */
+/*********************************************************************/
+restriction equality:
+  "All x y #i. Eq(x,y) @i ==> x = y"
+
+restriction inequality:
+  "All x y #i. NotEq(x,y) @i ==> not(x = y)"
+
+restriction OnlyOnce:
+  "All #i #j. OnlyOnce()@#i & OnlyOnce()@#j ==> #i = #j"
+
+/*********************************************************************/
+/* Properties to prove                                               */
+/*********************************************************************/
+
+/*
+ * Proofs that the protocol can be sucessfully executed
+ */
+lemma valid_session_can_be_created:
+  exists-trace
+  " /* Guide the prover to construct a valid protocol flow */
+    (
+      All x #i #j. ProtocolStep(x)@#i & ProtocolStep(x)@#j ==> #i = #j)
+      & ( not (Ex agent #i #j. BehaveKernel(agent) @ #i & BehaveICU(agent) @ #j ) 
+    )
+    &
+    Ex kernel icu common_key #i #j.
+      (
+        KernelDone(kernel, icu, common_key) @ #i
+        & ICUDone(icu, kernel, common_key) @ #j
+      )
+  "
+
+/*
+ * Proofs that the protocol does not leak the kernels private keys
+ */
+lemma attacker_does_not_know_kernel_keys: 
+  " All kkey #i. 
+      KernelKey(kkey) @ #i 
+      ==> 
+      ( not ( Ex #j. K(kkey) @ #j )) 
+  "
+
+/*
+ * Proofs that the protocol does not leak the icus private keys
+ */
+lemma attacker_does_not_know_icu_keys: 
+  " All ikey #i. 
+      IcuKey(ikey) @ #i 
+      ==> 
+      ( not ( Ex #j. K(ikey) @ #j )) 
+  "
+  
+/*
+ * Proofs that the symmetric key is secure under the following conditions:
+ *    - the kernel & icu are NOT compromised
+ *    - the attacker is NOT able to reset the protocol flow
+ */
+lemma attacker_does_not_know_symmetric_keys_max_restricted: 
+  " ( 
+      (All x #i #j. ProtocolStep(x)@#i & ProtocolStep(x)@#j ==> #i = #j)
+      & ( not (Ex agent #i #j. BehaveKernel(agent) @ #i & BehaveICU(agent) @ #j ) )
+    )
+    ==>
+    All kernel icu common_key #i #j. 
+      (
+        KernelDone(kernel, icu, common_key) @ #i
+        & ICUDone(icu, kernel, common_key) @ #j
+      )
+      ==>
+      (
+        not ( Ex #k. K(common_key) @ #k )
+      )
+  "
+
+/*
+ * Proofs that the symmetric key is secure under the following conditions:
+ *    - the kernel & icu are NOT compromised
+ */
+// TODO: proof does not finish
+lemma attacker_does_not_know_symmetric_keys_restricted: 
+  " ( 
+      ( not (Ex agent #i #j. BehaveKernel(agent) @ #i & BehaveICU(agent) @ #j ) )
+    )
+    ==>
+    All kernel icu common_key #i #j. 
+      (
+        KernelDone(kernel, icu, common_key) @ #i
+        & ICUDone(icu, kernel, common_key) @ #j
+      )
+      ==>
+      (
+        not ( Ex #k. K(common_key) @ #k )
+      )
+  "
+
+/*
+ * Proofs that the ICU trusting in a symmetic key means that the kernel set this key up with that icu
+ */
+// TODO: proof does not finish
+lemma icu_done_means_kernel_done:
+  " All icu kernel common_key #i. 
+      ( 
+        ICUDone(icu, kernel, common_key) @ #i
+        & not (Ex #j. BehaveKernel(icu) @ #j) 
+      )
+      ==>
+      ( Ex #j. (#j < #i) & KernelDone(kernel, icu, common_key) @ #j )
+  "
+
+end

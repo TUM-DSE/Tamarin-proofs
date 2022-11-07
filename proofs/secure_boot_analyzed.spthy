@@ -1,0 +1,190 @@
+theory SecureBoot begin
+
+// Function signature and definition of the equational theory E
+
+functions: fst/1, h/1, pair/2, pk/1, sign/2, snd/1, true/0, verify/3
+equations:
+    fst(<x.1, x.2>) = x.1,
+    snd(<x.1, x.2>) = x.2,
+    verify(sign(x.1, x.2), x.1, pk(x.2)) = true
+
+
+
+rule (modulo E) initialize_environment:
+   [ Fr( ~ca_priv ), Fr( ~icu_priv ) ]
+  --[ OnlyOnce( ) ]->
+   [
+   !CaPriv( ~ca_priv ), !CaPub( pk(~ca_priv) ), !ICUPriv( $ICU, ~icu_priv ),
+   !Certificate( $ICU,
+                 <'cert', $ICU, pk(~icu_priv), sign(<$ICU, pk(~icu_priv)>, ~ca_priv)>
+   ),
+   Out( pk(~ca_priv) ),
+   Out( pk(<'cert', $ICU, pk(~icu_priv), 
+            sign(<$ICU, pk(~icu_priv)>, ~ca_priv)>)
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) authorize_code:
+   [ In( code ), !CaPriv( ca_priv ) ]
+  --[ AuthCode( code ) ]->
+   [ !CodeSignature( sign(h(code), ca_priv) ), Out( sign(h(code), ca_priv) )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) run_BL0:
+   [
+   Fr( ~bl1_priv ), In( bl1_code ), !CodeSignature( bl1_signature ),
+   !ICUPriv( $ICU, icu_priv ), !CaPub( ca_pub )
+   ]
+  --[
+  Eq( verify(bl1_signature, h(bl1_code), ca_pub), true ),
+  TrustedBL1( bl1_code, ~bl1_priv, sign(pk(~bl1_priv), icu_priv) ),
+  Execute( bl1_code )
+  ]->
+   [
+   ExecuteBL1( bl1_code, ~bl1_priv, pk(~bl1_priv),
+               sign(pk(~bl1_priv), icu_priv)
+   )
+   ]
+
+  /*
+  rule (modulo AC) run_BL0:
+     [
+     Fr( ~bl1_priv ), In( bl1_code ), !CodeSignature( bl1_signature ),
+     !ICUPriv( $ICU, icu_priv ), !CaPub( ca_pub )
+     ]
+    --[
+    Eq( z, true ),
+    TrustedBL1( bl1_code, ~bl1_priv, sign(pk(~bl1_priv), icu_priv) ),
+    Execute( bl1_code )
+    ]->
+     [
+     ExecuteBL1( bl1_code, ~bl1_priv, pk(~bl1_priv),
+                 sign(pk(~bl1_priv), icu_priv)
+     )
+     ]
+    variants (modulo AC)
+    1. bl1_code
+             = bl1_code.8
+       bl1_signature
+             = bl1_signature.8
+       ca_pub
+             = ca_pub.8
+       z     = verify(bl1_signature.8, h(bl1_code.8), ca_pub.8)
+    
+    2. bl1_code
+             = x.8
+       bl1_signature
+             = sign(h(x.8), x.9)
+       ca_pub
+             = pk(x.9)
+       z     = true
+  */
+
+rule (modulo E) run_BL1:
+   [
+   Fr( ~kernel_priv ),
+   ExecuteBL1( 'bl1_code', bl1_priv, bl1_pub, bl1_pub_sig ),
+   In( kernel_code ), !CodeSignature( kernel_signature ), !CaPub( ca_pub )
+   ]
+  --[
+  Eq( verify(kernel_signature, h(kernel_code), ca_pub), true ),
+  TrustedKernel( kernel_code, ~kernel_priv,
+                 sign(pk(~kernel_priv), bl1_priv)
+  ),
+  Execute( kernel_code )
+  ]->
+   [ ]
+
+  /*
+  rule (modulo AC) run_BL1:
+     [
+     Fr( ~kernel_priv ),
+     ExecuteBL1( 'bl1_code', bl1_priv, bl1_pub, bl1_pub_sig ),
+     In( kernel_code ), !CodeSignature( kernel_signature ), !CaPub( ca_pub )
+     ]
+    --[
+    Eq( z, true ),
+    TrustedKernel( kernel_code, ~kernel_priv,
+                   sign(pk(~kernel_priv), bl1_priv)
+    ),
+    Execute( kernel_code )
+    ]->
+     [ ]
+    variants (modulo AC)
+    1. ca_pub
+             = ca_pub.11
+       kernel_code
+             = kernel_code.12
+       kernel_signature
+             = kernel_signature.13
+       z     = verify(kernel_signature.13, h(kernel_code.12), ca_pub.11)
+    
+    2. ca_pub
+             = pk(x.16)
+       kernel_code
+             = kernel_code.12
+       kernel_signature
+             = sign(h(kernel_code.12), x.16)
+       z     = true
+  */
+
+restriction equality:
+  "∀ x y #i. (Eq( x, y ) @ #i) ⇒ (x = y)"
+  // safety formula
+
+restriction OnlyOnce:
+  "∀ #i #j. ((OnlyOnce( ) @ #i) ∧ (OnlyOnce( ) @ #j)) ⇒ (#i = #j)"
+  // safety formula
+
+lemma kernel_can_be_executed:
+  exists-trace "∃ code priv sig #i. TrustedKernel( code, priv, sig ) @ #i"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ code priv sig #i. (TrustedKernel( code, priv, sig ) @ #i)"
+*/
+simplify
+solve( ExecuteBL1( 'bl1_code', bl1_priv, bl1_pub, bl1_pub_sig ) ▶₁ #i )
+  case run_BL0
+  solve( !CodeSignature( sign(h(code), x) ) ▶₃ #i )
+    case authorize_code
+    solve( !CaPub( pk(~ca_priv) ) ▶₄ #i )
+      case initialize_environment
+      SOLVED // trace found
+    qed
+  qed
+qed
+
+lemma only_authorized_code_is_executed:
+  all-traces
+  "∀ code #i.
+    (Execute( code ) @ #i) ⇒ (∃ #j. (#j < #i) ∧ (AuthCode( code ) @ #j))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ code #i.
+  (Execute( code ) @ #i) ∧ ∀ #j. (AuthCode( code ) @ #j) ⇒ ¬(#j < #i)"
+*/
+simplify
+solve( Execute( code ) @ #i )
+  case run_BL0
+  solve( !CodeSignature( sign(h(code), x) ) ▶₂ #i )
+    case authorize_code
+    by contradiction /* from formulas */
+  qed
+next
+  case run_BL1
+  solve( ExecuteBL1( 'bl1_code', bl1_priv, bl1_pub, bl1_pub_sig ) ▶₁ #i )
+    case run_BL0
+    solve( !CodeSignature( sign(h(code), x) ) ▶₃ #i )
+      case authorize_code
+      by contradiction /* from formulas */
+    qed
+  qed
+qed
+
+/* All well-formedness checks were successful. */
+
+end

@@ -1,0 +1,130 @@
+
+/*
+*  Author: Julian Pritzi
+*  Model Name: secure boot
+*  Status: DEVELOPMENTAL
+*
+*  Comments:
+*/
+
+theory SecureBoot
+begin
+
+builtins: hashing, signing
+
+/*********************************************************************/
+/* Rules for setting up initial state                                */
+/*********************************************************************/
+rule initialize_environment:
+    let
+      icu_pub = pk(~icu_priv)
+      icu_cert = <'cert', $ICU, icu_pub, sign(<$ICU, icu_pub>, ~ca_priv)>
+    in
+    [ Fr(~ca_priv), Fr(~icu_priv) ]
+  --[ OnlyOnce() ]->
+    [ 
+      !CaPriv(~ca_priv),
+      !CaPub(pk(~ca_priv)), 
+      !ICUPriv($ICU, ~icu_priv),
+      !Certificate($ICU, icu_cert),
+
+      Out(pk(~ca_priv)),
+      Out(pk(icu_cert))
+    ]
+
+rule authorize_code:
+    let
+      code_sig = sign(h(code), ca_priv)
+    in
+    [ In(code), !CaPriv(ca_priv) ]
+  --[ AuthCode(code) ]->
+    [ 
+      !CodeSignature(code_sig),
+      Out(code_sig)
+    ]
+
+/*********************************************************************/
+/* Rules modeling the messages sent between Kernel and ICU           */
+/*********************************************************************/
+rule run_BL0:
+    let 
+      bl1_hash = h(bl1_code)
+      bl1_valid = verify(bl1_signature, bl1_hash, ca_pub)
+      bl1_pub = pk(~bl1_priv)
+      bl1_pub_sig = sign(bl1_pub, icu_priv)
+    in
+    [ 
+      Fr(~bl1_priv),
+
+      In(bl1_code),
+
+      !CodeSignature(bl1_signature),
+      !ICUPriv($ICU, icu_priv),
+      !CaPub(ca_pub)
+    ]
+  --[ 
+      Eq(bl1_valid, true),
+
+      TrustedBL1(bl1_code, ~bl1_priv, bl1_pub_sig),
+      Execute(bl1_code)
+    ]->
+    [ 
+      ExecuteBL1(bl1_code, ~bl1_priv, bl1_pub, bl1_pub_sig)
+    ]
+
+rule run_BL1:
+    let 
+      kernel_hash = h(kernel_code)
+      kernel_valid = verify(kernel_signature, kernel_hash, ca_pub)
+      kernel_pub = pk(~kernel_priv)
+      kernel_pub_sig = sign(kernel_pub, bl1_priv)
+    in
+    [ 
+      Fr(~kernel_priv),
+
+      ExecuteBL1('bl1_code', bl1_priv, bl1_pub, bl1_pub_sig),
+      In(kernel_code),
+
+      !CodeSignature(kernel_signature),
+      !CaPub(ca_pub)
+    ]
+  --[ 
+      Eq(kernel_valid, true),
+
+      TrustedKernel(kernel_code, ~kernel_priv, kernel_pub_sig),
+      Execute(kernel_code)
+    ]->
+    [  ]
+
+/*********************************************************************/
+/* Restrictions - used by rules for controlling transitions          */
+/*********************************************************************/
+restriction equality:
+  "All x y #i. Eq(x,y) @i ==> x = y"
+
+restriction OnlyOnce:
+  "All #i #j. OnlyOnce()@#i & OnlyOnce()@#j ==> #i = #j"
+
+/*********************************************************************/
+/* Properties to prove                                               */
+/*********************************************************************/
+
+/*
+ * Proofs that secure boot protocol can be executed
+ */
+lemma kernel_can_be_executed:
+  exists-trace
+  " 
+    Ex code priv sig #i.
+      TrustedKernel(code, priv, sig) @ #i
+  "
+
+/*
+ * Proofs that only code that was authorized can be executed
+ */
+lemma only_authorized_code_is_executed:
+  " 
+    All code #i. Execute(code) @ #i ==> Ex #j. (#j < #i & AuthCode(code) @ #j)
+  "
+
+end
