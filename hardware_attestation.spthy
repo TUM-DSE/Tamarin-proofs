@@ -23,7 +23,7 @@ rule initialize_environment:
       icu_cert = <'cert', $ICU, icu_pub, sign(<$ICU, icu_pub>, ~ca_priv)>
     in
     [ Fr(~ca_priv), Fr(~kernel_priv), Fr(~icu_priv) ]
-  --[ OnlyOnce(), KernelKey(~kernel_priv), IcuKey(~icu_priv) ]->
+  --[ OnlyOnce(), KernelKey(~kernel_priv), IcuKey(~icu_priv), CaKey(~ca_priv) ]->
     [ 
       !CaPriv(~ca_priv),
       !CaPub(pk(~ca_priv)), 
@@ -212,6 +212,16 @@ lemma attacker_does_not_know_icu_keys:
       ==> 
       ( not ( Ex #j. K(ikey) @ #j )) 
   "
+
+/*
+ * Proofs that the protocol does not leak the ca private keys
+ */
+ lemma attacker_does_not_know_ca_keys: 
+ " All cakey #i. 
+    CaKey(cakey) @ #i 
+     ==> 
+     ( not ( Ex #j. K(cakey) @ #j )) 
+ "
   
 /*
  * Proofs that the symmetric key is secure under the following conditions:
@@ -240,34 +250,34 @@ lemma attacker_does_not_know_symmetric_keys_max_restricted:
  *    - the kernel & icu are NOT compromised
  */
 // TODO: proof does not finish
-lemma attacker_does_not_know_symmetric_keys_restricted: 
-  " ( 
-      ( not (Ex agent #i #j. BehaveKernel(agent) @ #i & BehaveICU(agent) @ #j ) )
-    )
-    ==>
-    All kernel icu common_key #i #j. 
-      (
-        KernelDone(kernel, icu, common_key) @ #i
-        & ICUDone(icu, kernel, common_key) @ #j
-      )
-      ==>
-      (
-        not ( Ex #k. K(common_key) @ #k )
-      )
-  "
+// lemma attacker_does_not_know_symmetric_keys_restricted [heuristic=i]: 
+//   " ( 
+//       ( not (Ex agent #i #j. BehaveKernel(agent) @ #i & BehaveICU(agent) @ #j ) )
+//     )
+//     ==>
+//     All kernel icu common_key #i #j. 
+//       (
+//         KernelDone(kernel, icu, common_key) @ #i
+//         & ICUDone(icu, kernel, common_key) @ #j
+//       )
+//       ==>
+//       (
+//         not ( Ex #k. K(common_key) @ #k )
+//       )
+//   "
 
 /*
  * Proofs that the ICU trusting in a symmetic key means that the kernel set this key up with that icu
  */
 // TODO: proof does not finish
-lemma icu_done_means_kernel_done:
-  " All icu kernel common_key #i. 
-      ( 
-        ICUDone(icu, kernel, common_key) @ #i
-        & not (Ex #j. BehaveKernel(icu) @ #j) 
-      )
-      ==>
-      ( Ex #j. (#j < #i) & KernelDone(kernel, icu, common_key) @ #j )
-  "
+// lemma icu_done_means_kernel_done:
+//   " All icu kernel common_key #i. 
+//       ( 
+//         ICUDone(icu, kernel, common_key) @ #i
+//         & not (Ex #j. BehaveKernel(icu) @ #j) 
+//       )
+//       ==>
+//       ( Ex #j. (#j < #i) & KernelDone(kernel, icu, common_key) @ #j )
+//   "
 
 end

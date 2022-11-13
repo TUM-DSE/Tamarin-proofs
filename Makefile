@@ -7,4 +7,4 @@ proofs/secure_boot_analyzed.spthy: secure_boot.spthy
 	tamarin-prover --prove secure_boot.spthy -O=proofs
 
 proofs/hardware_attestation_analyzed.spthy: hardware_attestation.spthy 
-	tamarin-prover --prove hardware_attestation.spthy -O=proofs -b=10
+	tamarin-prover --prove hardware_attestation.spthy -O=proofs
