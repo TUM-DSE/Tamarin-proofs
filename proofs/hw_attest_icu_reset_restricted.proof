@@ -2,7 +2,7 @@ theory HardwareAttestation begin
 
 // Function signature and definition of the equational theory E
 
-builtins: diffie-hellman
+builtins: diffie-hellman, multiset
 functions: fst/1, h/1, pair/2, pk/1, sign/2, snd/1, true/0, verify/3
 equations:
     fst(<x.1, x.2>) = x.1,
@@ -12,36 +12,62 @@ equations:
 
 
 rule (modulo E) initialize_environment:
-   [ Fr( ~ca_priv ), Fr( ~kernel_priv ), Fr( ~icu_priv ) ]
-  --[
-  OnlyOnce( ), KernelKey( ~kernel_priv ), IcuKey( ~icu_priv ),
-  CaKey( ~ca_priv )
-  ]->
+   [ Fr( ~ca_priv ), Fr( ~kernel_priv ) ]
+  --[ OnlyOnce( ), KernelKey( ~kernel_priv ), CaKey( ~ca_priv ) ]->
    [
    !CaPriv( ~ca_priv ), !CaPub( pk(~ca_priv) ),
-   !PrivKey( $Kernel, ~kernel_priv ), !PrivKey( $ICU, ~icu_priv ),
-   !Certificate( $Kernel,
-                 <'cert', $Kernel, pk(~kernel_priv), 
-                  sign(<$Kernel, pk(~kernel_priv)>, ~ca_priv)>
+   !KernelPrivKey( $Kernel, ~kernel_priv ),
+   !KernelCertificate( $Kernel,
+                       <'cert', $Kernel, pk(~kernel_priv), 
+                        sign(<$Kernel, pk(~kernel_priv)>, ~ca_priv)>
    ),
-   !Certificate( $ICU,
-                 <'cert', $ICU, pk(~icu_priv), sign(<$ICU, pk(~icu_priv)>, ~ca_priv)>
-   ),
-   Out( pk(~ca_priv) ),
+   NextICUCounter( '1' ), TotalResetCounter( '1' ), Out( pk(~ca_priv) ),
    Out( pk(<'cert', $Kernel, pk(~kernel_priv), 
             sign(<$Kernel, pk(~kernel_priv)>, ~ca_priv)>)
-   ),
-   Out( pk(<'cert', $ICU, pk(~icu_priv), 
-            sign(<$ICU, pk(~icu_priv)>, ~ca_priv)>)
    )
    ]
 
   /* has exactly the trivial AC variant */
 
+rule (modulo E) register_icu:
+   [ Fr( ~icu_priv ), !CaPriv( ~ca_priv ), NextICUCounter( x ) ]
+  --[
+  IcuKey( ~icu_priv ), Unique( $ICU ), RegisterICU( $ICU ),
+  RegisteredICUs( x )
+  ]->
+   [
+   !ICUPrivKey( $ICU, ~icu_priv ),
+   !ICUCertificate( $ICU,
+                    <'cert', $ICU, pk(~icu_priv), sign(<$ICU, pk(~icu_priv)>, ~ca_priv)>
+   ),
+   UninitializedIcu( $ICU ), IcuResetCounter( $ICU, '1' ),
+   NextICUCounter( ('1'+x) ),
+   Out( pk(<'cert', $ICU, pk(~icu_priv), 
+            sign(<$ICU, pk(~icu_priv)>, ~ca_priv)>)
+   )
+   ]
+
+  // loop breaker: [2]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) reset_icu:
+   [
+   Icu_memory_1( $ICU, ~dh_icu_priv, kernel_cert, ~n_icu ),
+   IcuResetCounter( $ICU, x ), TotalResetCounter( y )
+   ]
+  --[ ResetIcu( $ICU, ('1'+x) ), TotalResets( ('1'+y) ) ]->
+   [
+   UninitializedIcu( $ICU ), IcuResetCounter( $ICU, ('1'+x) ),
+   TotalResetCounter( ('1'+y) )
+   ]
+
+  // loop breakers: [2,1,0]
+  /* has exactly the trivial AC variant */
+
 rule (modulo E) kernel_to_icu_1:
    [
-   Fr( ~n_kernel ), !PrivKey( $Kernel, kernel_priv ),
-   !Certificate( $Kernel, kernel_cert )
+   Fr( ~n_kernel ), !KernelPrivKey( $Kernel, kernel_priv ),
+   !KernelCertificate( $Kernel, kernel_cert )
    ]
   --[ ProtocolStep( '1' ), BehaveKernel( $Kernel ) ]->
    [
@@ -53,11 +79,11 @@ rule (modulo E) kernel_to_icu_1:
 
 rule (modulo E) icu_to_kernel_1:
    [
-   Fr( ~n_icu ), Fr( ~dh_icu_priv ),
+   Fr( ~n_icu ), Fr( ~dh_icu_priv ), UninitializedIcu( $ICU ),
    In( <'1', n_kernel, n_kernel_sig_k, 'cert', kernel, kernel_pub, 
         kernel_sig>
    ),
-   !PrivKey( $ICU, icu_priv ), !Certificate( $ICU, icu_cert ),
+   !ICUPrivKey( $ICU, icu_priv ), !ICUCertificate( $ICU, icu_cert ),
    !CaPub( ca_pub )
    ]
   --[
@@ -77,11 +103,11 @@ rule (modulo E) icu_to_kernel_1:
   /*
   rule (modulo AC) icu_to_kernel_1:
      [
-     Fr( ~n_icu ), Fr( ~dh_icu_priv ),
+     Fr( ~n_icu ), Fr( ~dh_icu_priv ), UninitializedIcu( $ICU ),
      In( <'1', n_kernel, n_kernel_sig_k, 'cert', kernel, kernel_pub, 
           kernel_sig>
      ),
-     !PrivKey( $ICU, icu_priv ), !Certificate( $ICU, icu_cert ),
+     !ICUPrivKey( $ICU, icu_priv ), !ICUCertificate( $ICU, icu_cert ),
      !CaPub( ca_pub )
      ]
     --[
@@ -164,7 +190,7 @@ rule (modulo E) kernel_to_icu_2:
    In( <'2', n_icu, n_icu_sig_i, n_kernel_sig_i, dh_icu_pub, 
         dh_icu_pub_sig, 'cert', icu, icu_pub, icu_sig>
    ),
-   !PrivKey( $Kernel, kernel_priv ), !CaPub( ca_pub )
+   !KernelPrivKey( $Kernel, kernel_priv ), !CaPub( ca_pub )
    ]
   --[
   Eq( verify(n_kernel_sig_i, n_kernel, icu_pub), true ),
@@ -188,7 +214,7 @@ rule (modulo E) kernel_to_icu_2:
      In( <'2', n_icu, n_icu_sig_i, n_kernel_sig_i, dh_icu_pub, 
           dh_icu_pub_sig, 'cert', icu, icu_pub, icu_sig>
      ),
-     !PrivKey( $Kernel, kernel_priv ), !CaPub( ca_pub )
+     !KernelPrivKey( $Kernel, kernel_priv ), !CaPub( ca_pub )
      ]
     --[
     Eq( z, true ), Eq( z.1, true ), Eq( z.2, true ), Eq( z.3, true ),
@@ -5642,87 +5668,33 @@ restriction inequality:
   "∀ x y #i. (NotEq( x, y ) @ #i) ⇒ (¬(x = y))"
   // safety formula
 
-restriction OnlyOnce:
+restriction only_once:
   "∀ #i #j. ((OnlyOnce( ) @ #i) ∧ (OnlyOnce( ) @ #j)) ⇒ (#i = #j)"
+  // safety formula
+
+restriction uniqueness:
+  "∀ x #i #j. ((Unique( x ) @ #i) ∧ (Unique( x ) @ #j)) ⇒ (#i = #j)"
   // safety formula
 
 lemma valid_session_can_be_created:
   exists-trace
-  "((∀ x #i #j.
-      ((ProtocolStep( x ) @ #i) ∧ (ProtocolStep( x ) @ #j)) ⇒ (#i = #j)) ∧
-    (¬(∃ agent #i #j.
-        (BehaveKernel( agent ) @ #i) ∧ (BehaveICU( agent ) @ #j)))) ∧
+  "((∀ icu1 icu2 #i #j.
+      ((RegisterICU( icu1 ) @ #i) ∧ (RegisterICU( icu2 ) @ #j)) ⇒
+      (icu1 = icu2)) ∧
+    (¬(∃ icu x #i. ResetIcu( icu, x ) @ #i))) ∧
    (∃ kernel icu common_key #i #j.
      (KernelDone( kernel, icu, common_key ) @ #i) ∧
      (ICUDone( icu, kernel, common_key ) @ #j))"
 /*
 guarded formula characterizing all satisfying traces:
-"(∀ x #i #j.
-   (ProtocolStep( x ) @ #i) ∧ (ProtocolStep( x ) @ #j) ⇒ #i = #j) ∧
- (∀ agent #i #j.
-   (BehaveKernel( agent ) @ #i) ∧ (BehaveICU( agent ) @ #j) ⇒ ⊥) ∧
+"(∀ icu1 icu2 #i #j.
+   (RegisterICU( icu1 ) @ #i) ∧ (RegisterICU( icu2 ) @ #j) ⇒ icu1 = icu2) ∧
+ (∀ icu x #i. (ResetIcu( icu, x ) @ #i) ⇒ ⊥) ∧
  (∃ kernel icu common_key #i #j.
    (KernelDone( kernel, icu, common_key ) @ #i) ∧
    (ICUDone( icu, kernel, common_key ) @ #j))"
 */
-simplify
-solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
-  case kernel_to_icu_1_case_1
-  solve( !PrivKey( $Kernel, kernel_priv ) ▶₃ #i )
-    case initialize_environment_case_1
-    solve( !CaPub( pk(x.1) ) ▶₄ #i )
-      case initialize_environment
-      solve( Icu_memory_1( $ICU, dh_icu_priv,
-                           <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
-             ) ▶₀ #j )
-        case icu_to_kernel_1_case_4
-        solve( !KU( sign(~n_kernel, x) ) @ #vk.7 )
-          case icu_to_kernel_1
-          solve( !KU( sign(n_icu, ~icu_priv) ) @ #vk.6 )
-            case icu_to_kernel_1_case_1
-            solve( !KU( sign(dh_icu_pub, ~icu_priv) ) @ #vk.11 )
-              case icu_to_kernel_1_case_3
-              solve( !KU( sign(~n_icu, x) ) @ #vk.26 )
-                case kernel_to_icu_2
-                solve( !KU( ~n_kernel ) @ #vk.31 )
-                  case kernel_to_icu_1
-                  solve( !KU( ~n_icu ) @ #vk.14 )
-                    case icu_to_kernel_1
-                    solve( !KU( sign(<$ICU, pk(~icu_priv)>, ~ca_priv) ) @ #vk.26 )
-                      case icu_to_kernel_1
-                      solve( !KU( sign('g'^~dh_kernel_priv, ~kernel_priv) ) @ #vk.30 )
-                        case kernel_to_icu_2
-                        solve( !KU( sign(~n_kernel, ~kernel_priv) ) @ #vk.32 )
-                          case kernel_to_icu_1
-                          solve( !KU( sign(<$Kernel, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.37 )
-                            case kernel_to_icu_1
-                            solve( !KU( pk(~icu_priv) ) @ #vk.30 )
-                              case icu_to_kernel_1
-                              solve( !KU( pk(~kernel_priv) ) @ #vk.37 )
-                                case kernel_to_icu_1
-                                solve( !KU( 'g'^~dh_icu_priv ) @ #vk.31 )
-                                  case icu_to_kernel_1
-                                  solve( !KU( 'g'^~dh_kernel_priv ) @ #vk.35 )
-                                    case kernel_to_icu_2
-                                    SOLVED // trace found
-                                  qed
-                                qed
-                              qed
-                            qed
-                          qed
-                        qed
-                      qed
-                    qed
-                  qed
-                qed
-              qed
-            qed
-          qed
-        qed
-      qed
-    qed
-  qed
-qed
+by sorry
 
 lemma attacker_does_not_know_kernel_keys:
   all-traces
@@ -5731,8 +5703,7 @@ lemma attacker_does_not_know_kernel_keys:
 guarded formula characterizing all counter-examples:
 "∃ kkey #i. (KernelKey( kkey ) @ #i) ∧ ∃ #j. (K( kkey ) @ #j)"
 */
-simplify
-by solve( !KU( ~kernel_priv ) @ #vk )
+by sorry
 
 lemma attacker_does_not_know_icu_keys:
   all-traces "∀ ikey #i. (IcuKey( ikey ) @ #i) ⇒ (¬(∃ #j. K( ikey ) @ #j))"
@@ -5740,8 +5711,7 @@ lemma attacker_does_not_know_icu_keys:
 guarded formula characterizing all counter-examples:
 "∃ ikey #i. (IcuKey( ikey ) @ #i) ∧ ∃ #j. (K( ikey ) @ #j)"
 */
-simplify
-by solve( !KU( ~icu_priv ) @ #vk )
+by sorry
 
 lemma attacker_does_not_know_ca_keys:
   all-traces
@@ -5750,25 +5720,23 @@ lemma attacker_does_not_know_ca_keys:
 guarded formula characterizing all counter-examples:
 "∃ cakey #i. (CaKey( cakey ) @ #i) ∧ ∃ #j. (K( cakey ) @ #j)"
 */
-simplify
-by solve( !KU( ~ca_priv ) @ #vk )
+by sorry
 
-lemma attacker_does_not_know_symmetric_keys_max_restricted:
+lemma attacker_does_not_know_symmetric_keys__icu_and_reset_restricted:
   all-traces
-  "((∀ x #i #j.
-      ((ProtocolStep( x ) @ #i) ∧ (ProtocolStep( x ) @ #j)) ⇒ (#i = #j)) ∧
-    (¬(∃ agent #i #j.
-        (BehaveKernel( agent ) @ #i) ∧ (BehaveICU( agent ) @ #j)))) ⇒
+  "((∀ icu1 icu2 #i #j.
+      ((RegisterICU( icu1 ) @ #i) ∧ (RegisterICU( icu2 ) @ #j)) ⇒
+      (icu1 = icu2)) ∧
+    (¬(∃ icu x #i. ResetIcu( icu, x ) @ #i))) ⇒
    (∀ kernel icu common_key #i #j.
      ((KernelDone( kernel, icu, common_key ) @ #i) ∧
       (ICUDone( icu, kernel, common_key ) @ #j)) ⇒
      (¬(∃ #k. K( common_key ) @ #k)))"
 /*
 guarded formula characterizing all counter-examples:
-"(∀ x #i #j.
-   (ProtocolStep( x ) @ #i) ∧ (ProtocolStep( x ) @ #j) ⇒ #i = #j) ∧
- (∀ agent #i #j.
-   (BehaveKernel( agent ) @ #i) ∧ (BehaveICU( agent ) @ #j) ⇒ ⊥) ∧
+"(∀ icu1 icu2 #i #j.
+   (RegisterICU( icu1 ) @ #i) ∧ (RegisterICU( icu2 ) @ #j) ⇒ icu1 = icu2) ∧
+ (∀ icu x #i. (ResetIcu( icu, x ) @ #i) ⇒ ⊥) ∧
  (∃ kernel icu common_key #i #j.
    (KernelDone( kernel, icu, common_key ) @ #i) ∧
    (ICUDone( icu, kernel, common_key ) @ #j)
@@ -5777,38 +5745,32 @@ guarded formula characterizing all counter-examples:
 */
 simplify
 solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
-  case kernel_to_icu_1_case_1
-  solve( !PrivKey( $Kernel, kernel_priv ) ▶₃ #i )
-    case initialize_environment_case_1
+  case kernel_to_icu_1
+  solve( !KernelPrivKey( $Kernel, kernel_priv ) ▶₃ #i )
+    case initialize_environment
     solve( !CaPub( pk(x.1) ) ▶₄ #i )
       case initialize_environment
       solve( Icu_memory_1( $ICU, dh_icu_priv,
                            <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
              ) ▶₀ #j )
         case icu_to_kernel_1_case_1
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_2
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_3
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_4
         solve( !KU( sign(~n_kernel, x) ) @ #vk.7 )
           case c_sign
           solve( !KU( sign(<$ICU, pk(x)>, ~ca_priv) ) @ #vk.20 )
             case c_sign
             by solve( !KU( ~ca_priv ) @ #vk.42 )
           next
-            case icu_to_kernel_1
+            case icu_to_kernel_1_case_1
             by solve( !KU( ~icu_priv ) @ #vk.40 )
+          next
+            case icu_to_kernel_1_case_2
+            by contradiction /* from formulas */
           next
             case kernel_to_icu_1
             by contradiction /* from formulas */
           qed
         next
-          case icu_to_kernel_1
+          case icu_to_kernel_1_case_1
           solve( !KU( sign(n_icu, ~icu_priv) ) @ #vk.6 )
             case c_sign
             by solve( !KU( ~icu_priv ) @ #vk.39 )
@@ -5838,7 +5800,13 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                     next
                       case kernel_to_icu_1
                       by solve( !KU( ~kernel_priv ) @ #vk.37 )
+                    next
+                      case kernel_to_icu_2
+                      by solve( !KU( ~kernel_priv ) @ #vk.40 )
                     qed
+                  next
+                    case kernel_to_icu_2
+                    by solve( !KU( ~kernel_priv ) @ #vk.40 )
                   qed
                 next
                   case icu_to_kernel_1
@@ -5847,14 +5815,69 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                   case kernel_to_icu_2
                   solve( !KU( sign(~n_icu^(~dh_kernel_priv*inv(~dh_icu_priv)),
                                    ~kernel_priv)
-                         ) @ #vk.27 )
+                         ) @ #vk.30 )
                     case c_sign
-                    by solve( !KU( ~kernel_priv ) @ #vk.37 )
+                    by solve( !KU( ~kernel_priv ) @ #vk.53 )
+                  next
+                    case kernel_to_icu_2
+                    solve( !KU( sign(~n_icu, x.1) ) @ #vk.45 )
+                      case c_sign
+                      solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.49 )
+                        case c_sign
+                        solve( !KU( sign(<icu, pk(x.1)>, ~ca_priv) ) @ #vk.57 )
+                          case c_sign
+                          by solve( !KU( ~ca_priv ) @ #vk.72 )
+                        qed
+                      qed
+                    next
+                      case icu_to_kernel_1
+                      solve( !KU( sign(~n_kernel.1, ~icu_priv) ) @ #vk.49 )
+                        case c_sign
+                        by solve( !KU( ~icu_priv ) @ #vk.68 )
+                      next
+                        case icu_to_kernel_1_case_1
+                        solve( !KU( sign(~n_icu^(~dh_kernel_priv*inv(~dh_icu_priv)), x.1)
+                               ) @ #vk.43 )
+                          case c_sign
+                          solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.45 )
+                            case c_sign
+                            solve( !KU( sign(<icu, pk(x.1)>, ~ca_priv) ) @ #vk.52 )
+                              case c_sign
+                              by solve( !KU( ~ca_priv ) @ #vk.56 )
+                            next
+                              case icu_to_kernel_1_case_1
+                              by solve( !KU( ~icu_priv ) @ #vk.47 )
+                            next
+                              case icu_to_kernel_1_case_2
+                              by contradiction /* from formulas */
+                            qed
+                          next
+                            case icu_to_kernel_1
+                            by contradiction /* from formulas */
+                          qed
+                        next
+                          case icu_to_kernel_1
+                          by contradiction /* from formulas */
+                        next
+                          case kernel_to_icu_2
+                          by contradiction /* cyclic */
+                        qed
+                      next
+                        case icu_to_kernel_1_case_2
+                        by contradiction /* from formulas */
+                      qed
+                    next
+                      case kernel_to_icu_2
+                      by contradiction /* cyclic */
+                    qed
                   qed
                 qed
               qed
             next
               case icu_to_kernel_1_case_2
+              by contradiction /* from formulas */
+            next
+              case icu_to_kernel_1_case_3
               solve( splitEqs(1) )
                 case split
                 solve( !KU( sign(~n_icu, x) ) @ #vk.25 )
@@ -5874,7 +5897,13 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                     next
                       case kernel_to_icu_1
                       by solve( !KU( ~kernel_priv ) @ #vk.37 )
+                    next
+                      case kernel_to_icu_2
+                      by solve( !KU( ~kernel_priv ) @ #vk.40 )
                     qed
+                  next
+                    case kernel_to_icu_2
+                    by solve( !KU( ~kernel_priv ) @ #vk.40 )
                   qed
                 next
                   case icu_to_kernel_1
@@ -5883,14 +5912,69 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                   case kernel_to_icu_2
                   solve( !KU( sign(~n_kernel^(~dh_kernel_priv*inv(~dh_icu_priv)),
                                    ~kernel_priv)
-                         ) @ #vk.28 )
+                         ) @ #vk.31 )
                     case c_sign
-                    by solve( !KU( ~kernel_priv ) @ #vk.37 )
+                    by solve( !KU( ~kernel_priv ) @ #vk.53 )
+                  next
+                    case kernel_to_icu_2
+                    solve( !KU( sign(~n_icu, x.1) ) @ #vk.45 )
+                      case c_sign
+                      solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.49 )
+                        case c_sign
+                        solve( !KU( sign(<icu, pk(x.1)>, ~ca_priv) ) @ #vk.57 )
+                          case c_sign
+                          by solve( !KU( ~ca_priv ) @ #vk.72 )
+                        qed
+                      qed
+                    next
+                      case icu_to_kernel_1
+                      solve( !KU( sign(~n_kernel.1, ~icu_priv) ) @ #vk.49 )
+                        case c_sign
+                        by solve( !KU( ~icu_priv ) @ #vk.68 )
+                      next
+                        case icu_to_kernel_1_case_1
+                        solve( !KU( sign(~n_kernel^(~dh_kernel_priv*inv(~dh_icu_priv)), x.1)
+                               ) @ #vk.43 )
+                          case c_sign
+                          solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.45 )
+                            case c_sign
+                            solve( !KU( sign(<icu, pk(x.1)>, ~ca_priv) ) @ #vk.52 )
+                              case c_sign
+                              by solve( !KU( ~ca_priv ) @ #vk.56 )
+                            next
+                              case icu_to_kernel_1_case_1
+                              by solve( !KU( ~icu_priv ) @ #vk.47 )
+                            next
+                              case icu_to_kernel_1_case_2
+                              by contradiction /* from formulas */
+                            qed
+                          next
+                            case icu_to_kernel_1
+                            by contradiction /* from formulas */
+                          qed
+                        next
+                          case icu_to_kernel_1
+                          by contradiction /* from formulas */
+                        next
+                          case kernel_to_icu_2
+                          by contradiction /* cyclic */
+                        qed
+                      next
+                        case icu_to_kernel_1_case_2
+                        by contradiction /* from formulas */
+                      qed
+                    next
+                      case kernel_to_icu_2
+                      by contradiction /* cyclic */
+                    qed
                   qed
                 qed
               qed
             next
-              case icu_to_kernel_1_case_3
+              case icu_to_kernel_1_case_4
+              by contradiction /* from formulas */
+            next
+              case icu_to_kernel_1_case_5
               solve( !KU( sign(~n_icu, x) ) @ #vk.26 )
                 case c_sign
                 solve( !KU( sign('g'^~dh_kernel_priv, x) ) @ #vk.29 )
@@ -5907,9 +5991,15 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                   next
                     case kernel_to_icu_1
                     by solve( !KU( ~kernel_priv ) @ #vk.39 )
+                  next
+                    case kernel_to_icu_2
+                    by solve( !KU( ~kernel_priv ) @ #vk.42 )
                   qed
                 next
-                  case kernel_to_icu_2
+                  case kernel_to_icu_2_case_1
+                  by solve( !KU( ~kernel_priv ) @ #vk.42 )
+                next
+                  case kernel_to_icu_2_case_2
                   by solve( !KU( ~kernel_priv ) @ #vk.39 )
                 qed
               next
@@ -5917,20 +6007,50 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                 by contradiction /* cyclic */
               next
                 case kernel_to_icu_2
-                solve( !KU( 'g'^(~dh_icu_priv*~dh_kernel_priv) ) @ #vk.30 )
-                  case c_exp
-                  by solve( !KU( ~dh_icu_priv ) @ #vk.41 )
+                solve( !KU( sign(~n_icu, x.1) ) @ #vk.43 )
+                  case c_sign
+                  solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.46 )
+                    case c_sign
+                    solve( !KU( sign(<icu, pk(x.1)>, ~ca_priv) ) @ #vk.54 )
+                      case c_sign
+                      by solve( !KU( ~ca_priv ) @ #vk.58 )
+                    qed
+                  qed
                 next
                   case icu_to_kernel_1
-                  by solve( !KU( ~dh_kernel_priv ) @ #vk.39 )
+                  solve( !KU( sign(~n_kernel.1, ~icu_priv) ) @ #vk.46 )
+                    case c_sign
+                    by solve( !KU( ~icu_priv ) @ #vk.54 )
+                  next
+                    case icu_to_kernel_1_case_1
+                    solve( !KU( 'g'^(~dh_icu_priv*~dh_kernel_priv) ) @ #vk.30 )
+                      case c_exp
+                      by solve( !KU( ~dh_icu_priv ) @ #vk.41 )
+                    next
+                      case icu_to_kernel_1
+                      by solve( !KU( ~dh_kernel_priv ) @ #vk.39 )
+                    next
+                      case kernel_to_icu_2
+                      by solve( !KU( ~dh_icu_priv ) @ #vk.39 )
+                    qed
+                  next
+                    case icu_to_kernel_1_case_2
+                    by contradiction /* from formulas */
+                  qed
                 next
                   case kernel_to_icu_2
-                  by solve( !KU( ~dh_icu_priv ) @ #vk.39 )
+                  by contradiction /* cyclic */
                 qed
               qed
+            next
+              case icu_to_kernel_1_case_6
+              by contradiction /* from formulas */
             qed
           next
             case icu_to_kernel_1_case_2
+            by contradiction /* from formulas */
+          next
+            case icu_to_kernel_1_case_3
             solve( !KU( sign(dh_icu_pub, ~icu_priv) ) @ #vk.11 )
               case c_sign
               by solve( !KU( ~icu_priv ) @ #vk.37 )
@@ -5957,16 +6077,54 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                       by solve( !KU( ~kernel_priv ) @ #vk.37 )
                     next
                       case kernel_to_icu_2
-                      by contradiction /* cyclic */
+                      by solve( !KU( ~kernel_priv ) @ #vk.40 )
                     qed
+                  next
+                    case kernel_to_icu_2
+                    by solve( !KU( ~kernel_priv ) @ #vk.40 )
                   qed
                 next
                   case icu_to_kernel_1
                   by contradiction /* cyclic */
+                next
+                  case kernel_to_icu_2
+                  solve( !KU( sign(~n_icu^(~dh_kernel_priv*inv(~dh_icu_priv)),
+                                   ~kernel_priv)
+                         ) @ #vk.31 )
+                    case c_sign
+                    by solve( !KU( ~kernel_priv ) @ #vk.53 )
+                  next
+                    case kernel_to_icu_2
+                    solve( !KU( sign(~n_icu, x.1) ) @ #vk.45 )
+                      case c_sign
+                      solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.49 )
+                        case c_sign
+                        solve( !KU( sign(<icu, pk(x.1)>, ~ca_priv) ) @ #vk.57 )
+                          case c_sign
+                          by solve( !KU( ~ca_priv ) @ #vk.72 )
+                        qed
+                      qed
+                    next
+                      case icu_to_kernel_1
+                      solve( !KU( sign(~n_kernel.1, ~icu_priv) ) @ #vk.49 )
+                        case c_sign
+                        by solve( !KU( ~icu_priv ) @ #vk.68 )
+                      next
+                        case icu_to_kernel_1
+                        by contradiction /* from formulas */
+                      qed
+                    next
+                      case kernel_to_icu_2
+                      by contradiction /* cyclic */
+                    qed
+                  qed
                 qed
               qed
             next
               case icu_to_kernel_1_case_2
+              by contradiction /* from formulas */
+            next
+              case icu_to_kernel_1_case_3
               solve( splitEqs(1) )
                 case split
                 solve( !KU( sign(~n_icu, x) ) @ #vk.23 )
@@ -5991,16 +6149,72 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                       by solve( !KU( ~kernel_priv ) @ #vk.36 )
                     next
                       case kernel_to_icu_2
+                      by solve( !KU( ~kernel_priv ) @ #vk.39 )
+                    qed
+                  next
+                    case icu_to_kernel_1
+                    by contradiction /* cyclic */
+                  next
+                    case kernel_to_icu_2
+                    by solve( !KU( ~kernel_priv ) @ #vk.39 )
+                  qed
+                next
+                  case icu_to_kernel_1_case_1
+                  by contradiction /* cyclic */
+                next
+                  case icu_to_kernel_1_case_2
+                  by contradiction /* cyclic */
+                next
+                  case kernel_to_icu_2
+                  solve( !KU( sign(~n_kernel^(~dh_kernel_priv*inv(~dh_icu_priv)),
+                                   ~kernel_priv)
+                         ) @ #vk.28 )
+                    case c_sign
+                    by solve( !KU( ~kernel_priv ) @ #vk.52 )
+                  next
+                    case kernel_to_icu_2
+                    solve( !KU( sign(~n_icu, x.1) ) @ #vk.44 )
+                      case c_sign
+                      solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.48 )
+                        case c_sign
+                        solve( !KU( sign(<icu, pk(x)>, ~ca_priv) ) @ #vk.56 )
+                          case c_sign
+                          by solve( !KU( ~ca_priv ) @ #vk.71 )
+                        next
+                          case icu_to_kernel_1_case_1
+                          by solve( !KU( ~icu_priv ) @ #vk.62 )
+                        next
+                          case icu_to_kernel_1_case_2
+                          by contradiction /* from formulas */
+                        qed
+                      next
+                        case icu_to_kernel_1
+                        by contradiction /* from formulas */
+                      qed
+                    next
+                      case icu_to_kernel_1_case_1
+                      solve( !KU( sign(~n_kernel.1, ~icu_priv) ) @ #vk.49 )
+                        case c_sign
+                        by solve( !KU( ~icu_priv ) @ #vk.68 )
+                      next
+                        case icu_to_kernel_1
+                        by contradiction /* from formulas */
+                      qed
+                    next
+                      case icu_to_kernel_1_case_2
+                      by contradiction /* from formulas */
+                    next
+                      case kernel_to_icu_2
                       by contradiction /* cyclic */
                     qed
                   qed
-                next
-                  case icu_to_kernel_1
-                  by contradiction /* cyclic */
                 qed
               qed
             next
-              case icu_to_kernel_1_case_3
+              case icu_to_kernel_1_case_4
+              by contradiction /* from formulas */
+            next
+              case icu_to_kernel_1_case_5
               solve( !KU( sign(~n_icu, x) ) @ #vk.25 )
                 case c_sign
                 solve( !KU( sign('g'^~dh_kernel_priv, x) ) @ #vk.28 )
@@ -6022,19 +6236,70 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                     by solve( !KU( ~kernel_priv ) @ #vk.38 )
                   next
                     case kernel_to_icu_2
-                    by contradiction /* cyclic */
+                    by solve( !KU( ~kernel_priv ) @ #vk.41 )
                   qed
                 next
-                  case kernel_to_icu_2
+                  case icu_to_kernel_1
+                  by contradiction /* cyclic */
+                next
+                  case kernel_to_icu_2_case_1
+                  by solve( !KU( ~kernel_priv ) @ #vk.41 )
+                next
+                  case kernel_to_icu_2_case_2
                   by solve( !KU( ~kernel_priv ) @ #vk.38 )
                 qed
               next
-                case icu_to_kernel_1
+                case icu_to_kernel_1_case_1
                 by contradiction /* cyclic */
+              next
+                case icu_to_kernel_1_case_2
+                by contradiction /* cyclic */
+              next
+                case kernel_to_icu_2
+                solve( !KU( sign(~n_icu, x.1) ) @ #vk.42 )
+                  case c_sign
+                  solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.45 )
+                    case c_sign
+                    solve( !KU( sign(<icu, pk(x)>, ~ca_priv) ) @ #vk.53 )
+                      case c_sign
+                      by solve( !KU( ~ca_priv ) @ #vk.57 )
+                    next
+                      case icu_to_kernel_1_case_1
+                      by solve( !KU( ~icu_priv ) @ #vk.48 )
+                    next
+                      case icu_to_kernel_1_case_2
+                      by contradiction /* from formulas */
+                    qed
+                  next
+                    case icu_to_kernel_1
+                    by contradiction /* from formulas */
+                  qed
+                next
+                  case icu_to_kernel_1_case_1
+                  solve( !KU( sign(~n_kernel.1, ~icu_priv) ) @ #vk.46 )
+                    case c_sign
+                    by solve( !KU( ~icu_priv ) @ #vk.54 )
+                  next
+                    case icu_to_kernel_1
+                    by contradiction /* from formulas */
+                  qed
+                next
+                  case icu_to_kernel_1_case_2
+                  by contradiction /* from formulas */
+                next
+                  case kernel_to_icu_2
+                  by contradiction /* cyclic */
+                qed
               qed
+            next
+              case icu_to_kernel_1_case_6
+              by contradiction /* from formulas */
             qed
           next
-            case icu_to_kernel_1_case_3
+            case icu_to_kernel_1_case_4
+            by contradiction /* from formulas */
+          next
+            case icu_to_kernel_1_case_5
             solve( !KU( sign(dh_icu_pub, ~icu_priv) ) @ #vk.11 )
               case c_sign
               by solve( !KU( ~icu_priv ) @ #vk.39 )
@@ -6059,15 +6324,56 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                     next
                       case kernel_to_icu_1
                       by solve( !KU( ~kernel_priv ) @ #vk.39 )
+                    next
+                      case kernel_to_icu_2
+                      by solve( !KU( ~kernel_priv ) @ #vk.42 )
                     qed
+                  next
+                    case kernel_to_icu_2
+                    by solve( !KU( ~kernel_priv ) @ #vk.42 )
                   qed
                 next
                   case icu_to_kernel_1
                   by contradiction /* cyclic */
+                next
+                  case kernel_to_icu_2
+                  solve( !KU( sign(~n_icu^(~dh_kernel_priv*inv(~dh_icu_priv)),
+                                   ~kernel_priv)
+                         ) @ #vk.32 )
+                    case c_sign
+                    by solve( !KU( ~kernel_priv ) @ #vk.55 )
+                  next
+                    case kernel_to_icu_2
+                    solve( !KU( sign(~n_icu, x.1) ) @ #vk.47 )
+                      case c_sign
+                      solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.51 )
+                        case c_sign
+                        solve( !KU( sign(<icu, pk(x.1)>, ~ca_priv) ) @ #vk.59 )
+                          case c_sign
+                          by solve( !KU( ~ca_priv ) @ #vk.74 )
+                        qed
+                      qed
+                    next
+                      case icu_to_kernel_1
+                      solve( !KU( sign(~n_kernel.1, ~icu_priv) ) @ #vk.51 )
+                        case c_sign
+                        by solve( !KU( ~icu_priv ) @ #vk.70 )
+                      next
+                        case icu_to_kernel_1
+                        by contradiction /* from formulas */
+                      qed
+                    next
+                      case kernel_to_icu_2
+                      by contradiction /* cyclic */
+                    qed
+                  qed
                 qed
               qed
             next
               case icu_to_kernel_1_case_2
+              by contradiction /* from formulas */
+            next
+              case icu_to_kernel_1_case_3
               solve( splitEqs(1) )
                 case split
                 solve( !KU( sign(~n_icu, x) ) @ #vk.25 )
@@ -6090,15 +6396,74 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                     next
                       case kernel_to_icu_1
                       by solve( !KU( ~kernel_priv ) @ #vk.38 )
+                    next
+                      case kernel_to_icu_2
+                      by solve( !KU( ~kernel_priv ) @ #vk.41 )
                     qed
+                  next
+                    case icu_to_kernel_1
+                    by contradiction /* cyclic */
+                  next
+                    case kernel_to_icu_2
+                    by solve( !KU( ~kernel_priv ) @ #vk.41 )
                   qed
                 next
-                  case icu_to_kernel_1
+                  case icu_to_kernel_1_case_1
                   by contradiction /* cyclic */
+                next
+                  case icu_to_kernel_1_case_2
+                  by contradiction /* cyclic */
+                next
+                  case kernel_to_icu_2
+                  solve( !KU( sign(~n_kernel^(~dh_kernel_priv*inv(~dh_icu_priv)),
+                                   ~kernel_priv)
+                         ) @ #vk.30 )
+                    case c_sign
+                    by solve( !KU( ~kernel_priv ) @ #vk.54 )
+                  next
+                    case kernel_to_icu_2
+                    solve( !KU( sign(~n_icu, x.1) ) @ #vk.46 )
+                      case c_sign
+                      solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.50 )
+                        case c_sign
+                        solve( !KU( sign(<icu, pk(x.1)>, ~ca_priv) ) @ #vk.58 )
+                          case c_sign
+                          by solve( !KU( ~ca_priv ) @ #vk.73 )
+                        next
+                          case icu_to_kernel_1_case_1
+                          by solve( !KU( ~icu_priv ) @ #vk.64 )
+                        next
+                          case icu_to_kernel_1_case_2
+                          by contradiction /* from formulas */
+                        qed
+                      next
+                        case icu_to_kernel_1
+                        by contradiction /* from formulas */
+                      qed
+                    next
+                      case icu_to_kernel_1_case_1
+                      solve( !KU( sign(~n_kernel.1, ~icu_priv) ) @ #vk.51 )
+                        case c_sign
+                        by solve( !KU( ~icu_priv ) @ #vk.70 )
+                      next
+                        case icu_to_kernel_1
+                        by contradiction /* from formulas */
+                      qed
+                    next
+                      case icu_to_kernel_1_case_2
+                      by contradiction /* from formulas */
+                    next
+                      case kernel_to_icu_2
+                      by contradiction /* cyclic */
+                    qed
+                  qed
                 qed
               qed
             next
-              case icu_to_kernel_1_case_3
+              case icu_to_kernel_1_case_4
+              by contradiction /* from formulas */
+            next
+              case icu_to_kernel_1_case_5
               solve( !KU( sign(~n_icu, x) ) @ #vk.24 )
                 case c_sign
                 solve( !KU( sign('g'^~dh_kernel_priv, x) ) @ #vk.27 )
@@ -6118,576 +6483,403 @@ solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
                   next
                     case kernel_to_icu_1
                     by solve( !KU( ~kernel_priv ) @ #vk.38 )
+                  next
+                    case kernel_to_icu_2
+                    by solve( !KU( ~kernel_priv ) @ #vk.41 )
                   qed
                 next
-                  case kernel_to_icu_2
+                  case icu_to_kernel_1
+                  by contradiction /* cyclic */
+                next
+                  case kernel_to_icu_2_case_1
+                  by solve( !KU( ~kernel_priv ) @ #vk.41 )
+                next
+                  case kernel_to_icu_2_case_2
                   by solve( !KU( ~kernel_priv ) @ #vk.38 )
                 qed
               next
-                case icu_to_kernel_1
+                case icu_to_kernel_1_case_1
                 by contradiction /* cyclic */
-              qed
-            qed
-          qed
-        next
-          case kernel_to_icu_1
-          solve( !KU( sign(n_icu, ~kernel_priv) ) @ #vk.6 )
-            case c_sign
-            by solve( !KU( ~kernel_priv ) @ #vk.39 )
-          next
-            case kernel_to_icu_1
-            solve( !KU( sign(dh_icu_pub, ~kernel_priv) ) @ #vk.10 )
-              case c_sign
-              by solve( !KU( ~kernel_priv ) @ #vk.38 )
-            next
-              case kernel_to_icu_1
-              solve( splitEqs(1) )
-                case split
-                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.19 )
-                  case c_sign
-                  by solve( !KU( ~ca_priv ) @ #vk.37 )
-                next
-                  case kernel_to_icu_1
-                  by contradiction /* from formulas */
-                qed
-              qed
-            next
-              case kernel_to_icu_2
-              by contradiction /* cyclic */
-            qed
-          next
-            case kernel_to_icu_2_case_1
-            by contradiction /* cyclic */
-          next
-            case kernel_to_icu_2_case_2
-            by contradiction /* cyclic */
-          qed
-        next
-          case kernel_to_icu_2
-          by contradiction /* cyclic */
-        qed
-      qed
-    qed
-  next
-    case initialize_environment_case_2
-    solve( !CaPub( pk(x.1) ) ▶₄ #i )
-      case initialize_environment
-      solve( Icu_memory_1( $ICU, dh_icu_priv,
-                           <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
-             ) ▶₀ #j )
-        case icu_to_kernel_1_case_1
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_2
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_3
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_4
-        by contradiction /* from formulas */
-      qed
-    qed
-  qed
-next
-  case kernel_to_icu_1_case_2
-  solve( !PrivKey( $Kernel, kernel_priv ) ▶₃ #i )
-    case initialize_environment_case_1
-    solve( !CaPub( pk(x.1) ) ▶₄ #i )
-      case initialize_environment
-      solve( Icu_memory_1( $ICU, dh_icu_priv,
-                           <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
-             ) ▶₀ #j )
-        case icu_to_kernel_1_case_1
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_2
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_3
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_4
-        by contradiction /* from formulas */
-      qed
-    qed
-  next
-    case initialize_environment_case_2
-    solve( !CaPub( pk(x.1) ) ▶₄ #i )
-      case initialize_environment
-      solve( Icu_memory_1( $ICU, dh_icu_priv,
-                           <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
-             ) ▶₀ #j )
-        case icu_to_kernel_1_case_1
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_2
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_3
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_4
-        by contradiction /* from formulas */
-      qed
-    qed
-  qed
-next
-  case kernel_to_icu_1_case_3
-  solve( !PrivKey( $Kernel, kernel_priv ) ▶₃ #i )
-    case initialize_environment_case_1
-    solve( !CaPub( pk(x.1) ) ▶₄ #i )
-      case initialize_environment
-      solve( Icu_memory_1( $ICU, dh_icu_priv,
-                           <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
-             ) ▶₀ #j )
-        case icu_to_kernel_1_case_1
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_2
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_3
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_4
-        by contradiction /* from formulas */
-      qed
-    qed
-  next
-    case initialize_environment_case_2
-    solve( !CaPub( pk(x.1) ) ▶₄ #i )
-      case initialize_environment
-      solve( Icu_memory_1( $ICU, dh_icu_priv,
-                           <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
-             ) ▶₀ #j )
-        case icu_to_kernel_1_case_1
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_2
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_3
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_4
-        by contradiction /* from formulas */
-      qed
-    qed
-  qed
-next
-  case kernel_to_icu_1_case_4
-  solve( !PrivKey( $Kernel, kernel_priv ) ▶₃ #i )
-    case initialize_environment_case_1
-    solve( !CaPub( pk(x.1) ) ▶₄ #i )
-      case initialize_environment
-      solve( Icu_memory_1( $ICU, dh_icu_priv,
-                           <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
-             ) ▶₀ #j )
-        case icu_to_kernel_1_case_1
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_2
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_3
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_4
-        by contradiction /* from formulas */
-      qed
-    qed
-  next
-    case initialize_environment_case_2
-    solve( !CaPub( pk(x.1) ) ▶₄ #i )
-      case initialize_environment
-      solve( Icu_memory_1( $ICU, dh_icu_priv,
-                           <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
-             ) ▶₀ #j )
-        case icu_to_kernel_1_case_1
-        solve( !KU( sign(~n_kernel, x) ) @ #vk.7 )
-          case c_sign
-          solve( !KU( sign(<$ICU, pk(x)>, ~ca_priv) ) @ #vk.20 )
-            case c_sign
-            by solve( !KU( ~ca_priv ) @ #vk.42 )
-          next
-            case icu_to_kernel_1
-            by solve( !KU( ~kernel_priv ) @ #vk.40 )
-          next
-            case kernel_to_icu_1
-            by contradiction /* from formulas */
-          qed
-        next
-          case icu_to_kernel_1
-          solve( !KU( sign(n_icu, ~kernel_priv) ) @ #vk.6 )
-            case c_sign
-            by solve( !KU( ~kernel_priv ) @ #vk.39 )
-          next
-            case icu_to_kernel_1_case_1
-            solve( !KU( sign(dh_icu_pub, ~kernel_priv) ) @ #vk.11 )
-              case c_sign
-              by solve( !KU( ~kernel_priv ) @ #vk.39 )
-            next
-              case icu_to_kernel_1_case_1
-              solve( splitEqs(1) )
-                case split
-                solve( !KU( sign(~n_icu, x) ) @ #vk.24 )
-                  case c_sign
-                  solve( !KU( sign(~n_icu^(~dh_kernel_priv*inv(~dh_icu_priv)), x)
-                         ) @ #vk.27 )
-                    case c_sign
-                    solve( !KU( sign(~n_kernel, x) ) @ #vk.31 )
-                      case c_sign
-                      solve( !KU( sign(<$Kernel, pk(x)>, ~ca_priv) ) @ #vk.36 )
-                        case c_sign
-                        by solve( !KU( ~ca_priv ) @ #vk.39 )
-                      next
-                        case kernel_to_icu_1
-                        by solve( !KU( ~icu_priv ) @ #vk.37 )
-                      qed
-                    next
-                      case kernel_to_icu_1
-                      by solve( !KU( ~icu_priv ) @ #vk.37 )
-                    qed
-                  qed
-                next
-                  case icu_to_kernel_1
-                  by contradiction /* cyclic */
-                next
-                  case kernel_to_icu_2
-                  solve( !KU( sign(~n_icu^(~dh_kernel_priv*inv(~dh_icu_priv)), ~icu_priv)
-                         ) @ #vk.27 )
-                    case c_sign
-                    by solve( !KU( ~icu_priv ) @ #vk.37 )
-                  qed
-                qed
-              qed
-            next
-              case icu_to_kernel_1_case_2
-              solve( splitEqs(1) )
-                case split
-                solve( !KU( sign(~n_icu, x) ) @ #vk.25 )
-                  case c_sign
-                  solve( !KU( sign(~n_kernel^(~dh_kernel_priv*inv(~dh_icu_priv)), x)
-                         ) @ #vk.28 )
-                    case c_sign
-                    solve( !KU( sign(~n_kernel, x) ) @ #vk.31 )
-                      case c_sign
-                      solve( !KU( sign(<$Kernel, pk(x)>, ~ca_priv) ) @ #vk.36 )
-                        case c_sign
-                        by solve( !KU( ~ca_priv ) @ #vk.39 )
-                      next
-                        case kernel_to_icu_1
-                        by solve( !KU( ~icu_priv ) @ #vk.37 )
-                      qed
-                    next
-                      case kernel_to_icu_1
-                      by solve( !KU( ~icu_priv ) @ #vk.37 )
-                    qed
-                  qed
-                next
-                  case icu_to_kernel_1
-                  by contradiction /* cyclic */
-                next
-                  case kernel_to_icu_2
-                  solve( !KU( sign(~n_kernel^(~dh_kernel_priv*inv(~dh_icu_priv)),
-                                   ~icu_priv)
-                         ) @ #vk.28 )
-                    case c_sign
-                    by solve( !KU( ~icu_priv ) @ #vk.37 )
-                  qed
-                qed
-              qed
-            next
-              case icu_to_kernel_1_case_3
-              solve( !KU( sign(~n_icu, x) ) @ #vk.26 )
-                case c_sign
-                solve( !KU( sign('g'^~dh_kernel_priv, x) ) @ #vk.29 )
-                  case c_sign
-                  solve( !KU( sign(~n_kernel, x) ) @ #vk.33 )
-                    case c_sign
-                    solve( !KU( sign(<$Kernel, pk(x)>, ~ca_priv) ) @ #vk.38 )
-                      case c_sign
-                      by solve( !KU( ~ca_priv ) @ #vk.41 )
-                    next
-                      case kernel_to_icu_1
-                      by solve( !KU( ~icu_priv ) @ #vk.39 )
-                    qed
-                  next
-                    case kernel_to_icu_1
-                    by solve( !KU( ~icu_priv ) @ #vk.39 )
-                  qed
-                next
-                  case kernel_to_icu_2
-                  by solve( !KU( ~icu_priv ) @ #vk.39 )
-                qed
               next
-                case icu_to_kernel_1
+                case icu_to_kernel_1_case_2
                 by contradiction /* cyclic */
               next
                 case kernel_to_icu_2
-                solve( !KU( 'g'^(~dh_icu_priv*~dh_kernel_priv) ) @ #vk.30 )
-                  case c_exp
-                  by solve( !KU( ~dh_icu_priv ) @ #vk.41 )
-                next
-                  case icu_to_kernel_1
-                  by solve( !KU( ~dh_kernel_priv ) @ #vk.39 )
-                next
-                  case kernel_to_icu_2
-                  by solve( !KU( ~dh_icu_priv ) @ #vk.39 )
-                qed
-              qed
-            qed
-          next
-            case icu_to_kernel_1_case_2
-            solve( !KU( sign(dh_icu_pub, ~kernel_priv) ) @ #vk.11 )
-              case c_sign
-              by solve( !KU( ~kernel_priv ) @ #vk.37 )
-            next
-              case icu_to_kernel_1_case_1
-              solve( splitEqs(1) )
-                case split
-                solve( !KU( sign(~n_icu, x) ) @ #vk.25 )
+                solve( !KU( sign(~n_icu, x.1) ) @ #vk.42 )
                   case c_sign
-                  solve( !KU( sign(~n_icu^(~dh_kernel_priv*inv(~dh_icu_priv)), x)
-                         ) @ #vk.28 )
+                  solve( !KU( sign(~n_kernel.1, x.1) ) @ #vk.45 )
                     case c_sign
-                    solve( !KU( sign(~n_kernel, x) ) @ #vk.31 )
+                    solve( !KU( sign(<icu, pk(x)>, ~ca_priv) ) @ #vk.53 )
                       case c_sign
-                      solve( !KU( sign(<$Kernel, pk(x)>, ~ca_priv) ) @ #vk.36 )
-                        case c_sign
-                        by solve( !KU( ~ca_priv ) @ #vk.39 )
-                      next
-                        case kernel_to_icu_1
-                        by solve( !KU( ~icu_priv ) @ #vk.37 )
-                      qed
+                      by solve( !KU( ~ca_priv ) @ #vk.57 )
                     next
-                      case kernel_to_icu_1
-                      by solve( !KU( ~icu_priv ) @ #vk.37 )
+                      case icu_to_kernel_1_case_1
+                      by solve( !KU( ~icu_priv ) @ #vk.48 )
                     next
-                      case kernel_to_icu_2
-                      by contradiction /* cyclic */
-                    qed
-                  qed
-                next
-                  case icu_to_kernel_1
-                  by contradiction /* cyclic */
-                qed
-              qed
-            next
-              case icu_to_kernel_1_case_2
-              solve( splitEqs(1) )
-                case split
-                solve( !KU( sign(~n_icu, x) ) @ #vk.23 )
-                  case c_sign
-                  solve( !KU( sign(~n_kernel^(~dh_kernel_priv*inv(~dh_icu_priv)), x)
-                         ) @ #vk.26 )
-                    case c_sign
-                    solve( !KU( sign(~n_kernel, x) ) @ #vk.29 )
-                      case c_sign
-                      solve( !KU( sign(<$Kernel, pk(x)>, ~ca_priv) ) @ #vk.34 )
-                        case c_sign
-                        by solve( !KU( ~ca_priv ) @ #vk.38 )
-                      next
-                        case kernel_to_icu_1
-                        by solve( !KU( ~icu_priv ) @ #vk.36 )
-                      qed
-                    next
-                      case icu_to_kernel_1
-                      by contradiction /* cyclic */
-                    next
-                      case kernel_to_icu_1
-                      by solve( !KU( ~icu_priv ) @ #vk.36 )
-                    next
-                      case kernel_to_icu_2
-                      by contradiction /* cyclic */
-                    qed
-                  qed
-                next
-                  case icu_to_kernel_1
-                  by contradiction /* cyclic */
-                qed
-              qed
-            next
-              case icu_to_kernel_1_case_3
-              solve( !KU( sign(~n_icu, x) ) @ #vk.25 )
-                case c_sign
-                solve( !KU( sign('g'^~dh_kernel_priv, x) ) @ #vk.28 )
-                  case c_sign
-                  solve( !KU( sign(~n_kernel, x) ) @ #vk.31 )
-                    case c_sign
-                    solve( !KU( sign(<$Kernel, pk(x)>, ~ca_priv) ) @ #vk.36 )
-                      case c_sign
-                      by solve( !KU( ~ca_priv ) @ #vk.40 )
-                    next
-                      case kernel_to_icu_1
-                      by solve( !KU( ~icu_priv ) @ #vk.38 )
+                      case icu_to_kernel_1_case_2
+                      by contradiction /* from formulas */
                     qed
                   next
                     case icu_to_kernel_1
-                    by contradiction /* cyclic */
-                  next
-                    case kernel_to_icu_1
-                    by solve( !KU( ~icu_priv ) @ #vk.38 )
-                  next
-                    case kernel_to_icu_2
-                    by contradiction /* cyclic */
+                    by contradiction /* from formulas */
                   qed
                 next
+                  case icu_to_kernel_1_case_1
+                  solve( !KU( sign(~n_kernel.1, ~icu_priv) ) @ #vk.46 )
+                    case c_sign
+                    by solve( !KU( ~icu_priv ) @ #vk.54 )
+                  next
+                    case icu_to_kernel_1
+                    by contradiction /* from formulas */
+                  qed
+                next
+                  case icu_to_kernel_1_case_2
+                  by contradiction /* from formulas */
+                next
                   case kernel_to_icu_2
-                  by solve( !KU( ~icu_priv ) @ #vk.38 )
+                  by contradiction /* cyclic */
                 qed
-              next
-                case icu_to_kernel_1
-                by contradiction /* cyclic */
               qed
+            next
+              case icu_to_kernel_1_case_6
+              by contradiction /* from formulas */
             qed
           next
-            case icu_to_kernel_1_case_3
+            case icu_to_kernel_1_case_6
+            by contradiction /* from formulas */
+          qed
+        next
+          case icu_to_kernel_1_case_2
+          by contradiction /* from formulas */
+        next
+          case kernel_to_icu_1
+          solve( !KU( sign(n_icu, ~kernel_priv) ) @ #vk.6 )
+            case c_sign
+            by solve( !KU( ~kernel_priv ) @ #vk.39 )
+          next
+            case kernel_to_icu_1
             solve( !KU( sign(dh_icu_pub, ~kernel_priv) ) @ #vk.11 )
               case c_sign
               by solve( !KU( ~kernel_priv ) @ #vk.39 )
             next
-              case icu_to_kernel_1_case_1
-              solve( splitEqs(1) )
-                case split
-                solve( !KU( sign(~n_icu, x) ) @ #vk.26 )
-                  case c_sign
-                  solve( !KU( sign(~n_icu^(~dh_kernel_priv*inv(~dh_icu_priv)), x)
-                         ) @ #vk.29 )
-                    case c_sign
-                    solve( !KU( sign(~n_kernel, x) ) @ #vk.33 )
-                      case c_sign
-                      solve( !KU( sign(<$Kernel, pk(x)>, ~ca_priv) ) @ #vk.38 )
-                        case c_sign
-                        by solve( !KU( ~ca_priv ) @ #vk.41 )
-                      next
-                        case kernel_to_icu_1
-                        by solve( !KU( ~icu_priv ) @ #vk.39 )
-                      qed
-                    next
-                      case kernel_to_icu_1
-                      by solve( !KU( ~icu_priv ) @ #vk.39 )
-                    qed
-                  qed
-                next
-                  case icu_to_kernel_1
-                  by contradiction /* cyclic */
-                qed
-              qed
-            next
-              case icu_to_kernel_1_case_2
-              solve( splitEqs(1) )
-                case split
-                solve( !KU( sign(~n_icu, x) ) @ #vk.25 )
-                  case c_sign
-                  solve( !KU( sign(~n_kernel^(~dh_kernel_priv*inv(~dh_icu_priv)), x)
-                         ) @ #vk.28 )
-                    case c_sign
-                    solve( !KU( sign(~n_kernel, x) ) @ #vk.31 )
-                      case c_sign
-                      solve( !KU( sign(<$Kernel, pk(x)>, ~ca_priv) ) @ #vk.36 )
-                        case c_sign
-                        by solve( !KU( ~ca_priv ) @ #vk.40 )
-                      next
-                        case kernel_to_icu_1
-                        by solve( !KU( ~icu_priv ) @ #vk.38 )
-                      qed
-                    next
-                      case icu_to_kernel_1
-                      by contradiction /* cyclic */
-                    next
-                      case kernel_to_icu_1
-                      by solve( !KU( ~icu_priv ) @ #vk.38 )
-                    qed
-                  qed
-                next
-                  case icu_to_kernel_1
-                  by contradiction /* cyclic */
-                qed
-              qed
-            next
-              case icu_to_kernel_1_case_3
-              solve( !KU( sign(~n_icu, x) ) @ #vk.24 )
-                case c_sign
-                solve( !KU( sign('g'^~dh_kernel_priv, x) ) @ #vk.27 )
-                  case c_sign
-                  solve( !KU( sign(~n_kernel, x) ) @ #vk.31 )
-                    case c_sign
-                    solve( !KU( sign(<$Kernel, pk(x)>, ~ca_priv) ) @ #vk.36 )
-                      case c_sign
-                      by solve( !KU( ~ca_priv ) @ #vk.40 )
-                    next
-                      case kernel_to_icu_1
-                      by solve( !KU( ~icu_priv ) @ #vk.38 )
-                    qed
-                  next
-                    case icu_to_kernel_1
-                    by contradiction /* cyclic */
-                  next
-                    case kernel_to_icu_1
-                    by solve( !KU( ~icu_priv ) @ #vk.38 )
-                  qed
-                next
-                  case kernel_to_icu_2
-                  by solve( !KU( ~icu_priv ) @ #vk.38 )
-                qed
-              next
-                case icu_to_kernel_1
-                by contradiction /* cyclic */
-              qed
-            qed
-          qed
-        next
-          case kernel_to_icu_1
-          solve( !KU( sign(n_icu, ~icu_priv) ) @ #vk.6 )
-            case c_sign
-            by solve( !KU( ~icu_priv ) @ #vk.39 )
-          next
-            case kernel_to_icu_1
-            solve( !KU( sign(dh_icu_pub, ~icu_priv) ) @ #vk.10 )
-              case c_sign
-              by solve( !KU( ~icu_priv ) @ #vk.38 )
-            next
               case kernel_to_icu_1
               solve( splitEqs(1) )
                 case split
-                solve( !KU( sign(<$ICU, pk(~icu_priv)>, ~ca_priv) ) @ #vk.19 )
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.22 )
                   case c_sign
-                  by solve( !KU( ~ca_priv ) @ #vk.37 )
+                  by solve( !KU( ~ca_priv ) @ #vk.40 )
                 next
                   case kernel_to_icu_1
                   by contradiction /* from formulas */
                 qed
               qed
             next
-              case kernel_to_icu_2
-              by contradiction /* cyclic */
+              case kernel_to_icu_2_case_1
+              solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.25 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.56 )
+              next
+                case kernel_to_icu_1
+                by contradiction /* from formulas */
+              qed
+            next
+              case kernel_to_icu_2_case_2
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.25 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.57 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
             qed
           next
             case kernel_to_icu_2_case_1
-            by contradiction /* cyclic */
+            solve( !KU( sign(dh_icu_pub, ~kernel_priv) ) @ #vk.13 )
+              case c_sign
+              by solve( !KU( ~kernel_priv ) @ #vk.55 )
+            next
+              case kernel_to_icu_1
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.27 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.56 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
+            next
+              case kernel_to_icu_2_case_1
+              solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.29 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.72 )
+              next
+                case kernel_to_icu_1
+                by contradiction /* from formulas */
+              qed
+            next
+              case kernel_to_icu_2_case_2
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.30 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.73 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
+            qed
           next
             case kernel_to_icu_2_case_2
-            by contradiction /* cyclic */
+            solve( !KU( sign(dh_icu_pub, ~kernel_priv) ) @ #vk.12 )
+              case c_sign
+              by solve( !KU( ~kernel_priv ) @ #vk.56 )
+            next
+              case kernel_to_icu_1
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.26 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.57 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
+            next
+              case kernel_to_icu_2_case_1
+              solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.28 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.73 )
+              next
+                case kernel_to_icu_1
+                by contradiction /* from formulas */
+              qed
+            next
+              case kernel_to_icu_2_case_2
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.29 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.74 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
+            qed
           qed
         next
           case kernel_to_icu_2
-          by contradiction /* cyclic */
+          solve( !KU( sign(n_icu, ~kernel_priv) ) @ #vk.7 )
+            case c_sign
+            by solve( !KU( ~kernel_priv ) @ #vk.56 )
+          next
+            case kernel_to_icu_1
+            solve( !KU( sign(dh_icu_pub, ~kernel_priv) ) @ #vk.12 )
+              case c_sign
+              by solve( !KU( ~kernel_priv ) @ #vk.56 )
+            next
+              case kernel_to_icu_1
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.27 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.57 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
+            next
+              case kernel_to_icu_2_case_1
+              solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.29 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.73 )
+              next
+                case kernel_to_icu_1
+                by contradiction /* from formulas */
+              qed
+            next
+              case kernel_to_icu_2_case_2
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.30 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.74 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
+            qed
+          next
+            case kernel_to_icu_2_case_1
+            solve( !KU( sign(dh_icu_pub, ~kernel_priv) ) @ #vk.14 )
+              case c_sign
+              by solve( !KU( ~kernel_priv ) @ #vk.72 )
+            next
+              case kernel_to_icu_1
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.32 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.73 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
+            next
+              case kernel_to_icu_2_case_1
+              solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.33 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.89 )
+              next
+                case kernel_to_icu_1
+                by contradiction /* from formulas */
+              qed
+            next
+              case kernel_to_icu_2_case_2
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.35 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.90 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
+            qed
+          next
+            case kernel_to_icu_2_case_2
+            solve( !KU( sign(dh_icu_pub, ~kernel_priv) ) @ #vk.13 )
+              case c_sign
+              by solve( !KU( ~kernel_priv ) @ #vk.73 )
+            next
+              case kernel_to_icu_1
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.31 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.74 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
+            next
+              case kernel_to_icu_2_case_1
+              solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.32 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.90 )
+              next
+                case kernel_to_icu_1
+                by contradiction /* from formulas */
+              qed
+            next
+              case kernel_to_icu_2_case_2
+              solve( splitEqs(1) )
+                case split
+                solve( !KU( sign(<$ICU, pk(~kernel_priv)>, ~ca_priv) ) @ #vk.34 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.91 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              qed
+            qed
+          qed
         qed
       next
         case icu_to_kernel_1_case_2
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_3
-        by contradiction /* from formulas */
-      next
-        case icu_to_kernel_1_case_4
         by contradiction /* from formulas */
       qed
     qed
   qed
 qed
+
+lemma attacker_does_not_know_symmetric_keys__reset_restricted [use_induction]:
+  all-traces
+  "∀ num_icu #n.
+    (RegisteredICUs( num_icu ) @ #n) ⇒
+    ((¬(∃ icu x #i. ResetIcu( icu, x ) @ #i)) ⇒
+     (∀ kernel icu common_key #i #j.
+       ((KernelDone( kernel, icu, common_key ) @ #i) ∧
+        (ICUDone( icu, kernel, common_key ) @ #j)) ⇒
+       (¬(∃ #k. K( common_key ) @ #k))))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ num_icu #n.
+  (RegisteredICUs( num_icu ) @ #n)
+ ∧
+  (∀ icu x #i. (ResetIcu( icu, x ) @ #i) ⇒ ⊥) ∧
+  (∃ kernel icu common_key #i #j.
+    (KernelDone( kernel, icu, common_key ) @ #i) ∧
+    (ICUDone( icu, kernel, common_key ) @ #j)
+   ∧
+    ∃ #k. (K( common_key ) @ #k))"
+*/
+by sorry
+
+lemma attacker_does_not_know_symmetric_keys__icu_restricted [use_induction]:
+  all-traces
+  "(∀ icu1 icu2 #i #j.
+     ((RegisterICU( icu1 ) @ #i) ∧ (RegisterICU( icu2 ) @ #j)) ⇒
+     (icu1 = icu2)) ⇒
+   (∀ reset_num #r.
+     (TotalResets( reset_num ) @ #r) ⇒
+     (∀ kernel icu common_key #i #j.
+       ((KernelDone( kernel, icu, common_key ) @ #i) ∧
+        (ICUDone( icu, kernel, common_key ) @ #j)) ⇒
+       (¬(∃ #k. K( common_key ) @ #k))))"
+/*
+guarded formula characterizing all counter-examples:
+"(∀ icu1 icu2 #i #j.
+   (RegisterICU( icu1 ) @ #i) ∧ (RegisterICU( icu2 ) @ #j) ⇒ icu1 = icu2) ∧
+ (∃ reset_num #r.
+   (TotalResets( reset_num ) @ #r)
+  ∧
+   ∃ kernel icu common_key #i #j.
+    (KernelDone( kernel, icu, common_key ) @ #i) ∧
+    (ICUDone( icu, kernel, common_key ) @ #j)
+   ∧
+    ∃ #k. (K( common_key ) @ #k))"
+*/
+by sorry
+
+lemma attacker_does_not_know_symmetric_keys [use_induction]:
+  all-traces
+  "∀ num_icu #n.
+    (RegisteredICUs( num_icu ) @ #n) ⇒
+    (∀ reset_num #r.
+      (TotalResets( reset_num ) @ #r) ⇒
+      (∀ kernel icu common_key #i #j.
+        ((KernelDone( kernel, icu, common_key ) @ #i) ∧
+         (ICUDone( icu, kernel, common_key ) @ #j)) ⇒
+        (¬(∃ #k. K( common_key ) @ #k))))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ num_icu #n.
+  (RegisteredICUs( num_icu ) @ #n)
+ ∧
+  ∃ reset_num #r.
+   (TotalResets( reset_num ) @ #r)
+  ∧
+   ∃ kernel icu common_key #i #j.
+    (KernelDone( kernel, icu, common_key ) @ #i) ∧
+    (ICUDone( icu, kernel, common_key ) @ #j)
+   ∧
+    ∃ #k. (K( common_key ) @ #k)"
+*/
+by sorry
 
 /* All well-formedness checks were successful. */
 
