@@ -1,0 +1,28 @@
+maude tool: 'maude'
+ checking version: 3.1. OK.
+ checking installation: OK.
+
+
+analyzing: secure_boot.spthy
+
+------------------------------------------------------------------------------
+analyzed: secure_boot.spthy
+
+  output:          proofs/secure_boot_analyzed.spthy
+  processing time: 0.225156068s
+  kernel_can_be_executed (exists-trace): verified (5 steps)
+  only_authorized_code_is_executed (all-traces): verified (7 steps)
+
+------------------------------------------------------------------------------
+
+==============================================================================
+summary of summaries:
+
+analyzed: secure_boot.spthy
+
+  output:          proofs/secure_boot_analyzed.spthy
+  processing time: 0.225156068s
+  kernel_can_be_executed (exists-trace): verified (5 steps)
+  only_authorized_code_is_executed (all-traces): verified (7 steps)
+
+==============================================================================

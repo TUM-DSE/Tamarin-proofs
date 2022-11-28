@@ -1,0 +1,40 @@
+maude tool: 'maude'
+ checking version: 3.1. OK.
+ checking installation: OK.
+
+
+analyzing: hardware_attestation.spthy
+
+------------------------------------------------------------------------------
+analyzed: hardware_attestation.spthy
+
+  output:          proofs/hardware_attestation_analyzed.spthy
+  processing time: 112.887217135s
+  valid_session_can_be_created (exists-trace): verified (23 steps)
+  trust_can_be_established (exists-trace): verified (24 steps)
+  attacker_does_not_know_kernel_keys (all-traces): verified (2 steps)
+  attacker_does_not_know_icu_keys (all-traces): verified (3 steps)
+  attacker_does_not_know_ca_keys (all-traces): verified (2 steps)
+  attacker_does_not_know_symmetric_keys (all-traces): verified (120 steps)
+  kernel_trust_means_icu_done (all-traces): verified (79 steps)
+  icu_trust_means_kernel_done (all-traces): verified (134 steps)
+
+------------------------------------------------------------------------------
+
+==============================================================================
+summary of summaries:
+
+analyzed: hardware_attestation.spthy
+
+  output:          proofs/hardware_attestation_analyzed.spthy
+  processing time: 112.887217135s
+  valid_session_can_be_created (exists-trace): verified (23 steps)
+  trust_can_be_established (exists-trace): verified (24 steps)
+  attacker_does_not_know_kernel_keys (all-traces): verified (2 steps)
+  attacker_does_not_know_icu_keys (all-traces): verified (3 steps)
+  attacker_does_not_know_ca_keys (all-traces): verified (2 steps)
+  attacker_does_not_know_symmetric_keys (all-traces): verified (120 steps)
+  kernel_trust_means_icu_done (all-traces): verified (79 steps)
+  icu_trust_means_kernel_done (all-traces): verified (134 steps)
+
+==============================================================================
