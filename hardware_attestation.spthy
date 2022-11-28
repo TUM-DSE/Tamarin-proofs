@@ -10,6 +10,8 @@
 theory HardwareAttestation
 begin
 
+heuristic: O "hardware_attestation_oracle.py"
+
 builtins: hashing, signing, diffie-hellman, multiset
 
 /*********************************************************************/
@@ -247,84 +249,17 @@ lemma attacker_does_not_know_icu_keys:
 /*
  * Proofs that the protocol does not leak the ca private keys
  */
- lemma attacker_does_not_know_ca_keys: 
+lemma attacker_does_not_know_ca_keys: 
  " All cakey #i. 
     CaKey(cakey) @ #i 
      ==> 
      ( not ( Ex #j. K(cakey) @ #j )) 
  "
-  
-/*
- * Proofs that the symmetric key is secure under the following conditions:
- *    - there is only one icu
- *    - there are no resets
- */
-lemma attacker_does_not_know_symmetric_keys__icu_and_reset_restricted: 
-  " (
-      ( All icu1 icu2 #i #j. RegisterICU(icu1) @ #i & RegisterICU(icu2) @ #j ==> icu1 = icu2 )
-      &  
-      not (Ex icu x #i. ResetIcu(icu, x) @ #i)
-    )
-    ==>
-    All kernel icu common_key #i #j. 
-      (
-        KernelDone(kernel, icu, common_key) @ #i
-        & ICUDone(icu, kernel, common_key) @ #j
-      )
-      ==>
-      (
-        not ( Ex #k. K(common_key) @ #k )
-      )
-  "
 
 /*
- * Proofs that the symmetric key is secure under the following conditions:
- *    - there are no resets
+ * Proofs that the symmetric key is secure
  */
-lemma attacker_does_not_know_symmetric_keys__reset_restricted [use_induction]: 
-  " All num_icu #n. RegisteredICUs(num_icu) @ #n 
-    ==> 
-    (
-      ( not (Ex icu x #i. ResetIcu(icu, x) @ #i) )
-      ==>
-      All kernel icu common_key #i #j. 
-        (
-          KernelDone(kernel, icu, common_key) @ #i
-          & ICUDone(icu, kernel, common_key) @ #j
-        )
-        ==>
-        (
-          not ( Ex #k. K(common_key) @ #k )
-        )
-    )
-  "
-
-/*
- * Proofs that the symmetric key is secure under the following conditions:
- *    - there is only one icu
- */
-lemma attacker_does_not_know_symmetric_keys__icu_restricted [use_induction]: 
-  " ( All icu1 icu2 #i #j. RegisterICU(icu1) @ #i & RegisterICU(icu2) @ #j ==> icu1 = icu2 )
-    ==>
-    All reset_num #r. TotalResets(reset_num) @ #r
-      ==>
-      (
-        All kernel icu common_key #i #j. 
-        (
-          KernelDone(kernel, icu, common_key) @ #i
-          & ICUDone(icu, kernel, common_key) @ #j
-        )
-        ==>
-        (
-          not ( Ex #k. K(common_key) @ #k )
-        )
-      )
-  "
-/*
- * Proofs that the symmetric key is secure under the following conditions:
- *    - there is only one icu
- */
-lemma attacker_does_not_know_symmetric_keys [use_induction]: 
+lemma attacker_does_not_know_symmetric_keys: 
   " All num_icu #n. RegisteredICUs(num_icu) @ #n 
     ==>
       All reset_num #r. TotalResets(reset_num) @ #r
