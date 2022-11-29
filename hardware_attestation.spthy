@@ -342,32 +342,32 @@ lemma attacker_does_not_know_symmetric_keys:
  * Proofs that the kernel trusting in a symmetic key means that the icu set this key up with that kernel
  */
 lemma kernel_trust_means_icu_done:
-  " ( All icu1 icu2 #i #j. RegisterICU(icu1) @ #i & RegisterICU(icu2) @ #j ==> icu1 = icu2 )
-    &
-    ( not (Ex icu x #i. ResetIcu(icu, x) @ #i) )
+  " All num_icu #n. RegisteredICUs(num_icu) @ #n 
     ==>
-      (
-        All icu kernel common_key #i. 
-        ( KernelTrusts(kernel, icu, common_key) @ #i )
+      All reset_num #r. TotalResets(reset_num) @ #r
         ==>
-        ( Ex #j. (#j < #i) & ICUDone(icu, kernel, common_key) @ #j )
-      )
+        (
+          All icu kernel common_key #i. 
+          ( KernelTrusts(kernel, icu, common_key) @ #i )
+          ==>
+          ( Ex #j. (#j < #i) & ICUDone(icu, kernel, common_key) @ #j )
+        )
   "
 
 /*
  * Proofs that the ICU trusting in a symmetic key means that the kernel set this key up with that icu
  */
 lemma icu_trust_means_kernel_done:
-  " ( All icu1 icu2 #i #j. RegisterICU(icu1) @ #i & RegisterICU(icu2) @ #j ==> icu1 = icu2 )
-    &
-    ( not (Ex icu x #i. ResetIcu(icu, x) @ #i) )
+  " All num_icu #n. RegisteredICUs(num_icu) @ #n 
     ==>
-      (
-        All icu kernel common_key #i. 
-        ( ICUTrusts(icu, kernel, common_key) @ #i )
+      All reset_num #r. TotalResets(reset_num) @ #r
         ==>
-        ( Ex #j. (#j < #i) & KernelDone(kernel, icu, common_key) @ #j )
-      )
+        (
+          All icu kernel common_key #i. 
+          ( ICUTrusts(icu, kernel, common_key) @ #i )
+          ==>
+          ( Ex #j. (#j < #i) & KernelDone(kernel, icu, common_key) @ #j )
+        )
   "
 
 end
