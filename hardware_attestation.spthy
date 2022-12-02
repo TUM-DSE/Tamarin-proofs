@@ -20,7 +20,7 @@ builtins: hashing, signing, diffie-hellman, multiset, symmetric-encryption
 rule initialize_environment:
     let
       kernel_pub = pk(~kernel_priv)
-      kernel_cert = <'cert', $Kernel, kernel_pub, sign(<$Kernel, kernel_pub>, ~ca_priv)>
+      kernel_cert = <'cert', $Kernel, kernel_pub, sign(<'kernel', $Kernel, kernel_pub>, ~ca_priv)>
     in
     [ Fr(~ca_priv), Fr(~kernel_priv) ]
   --[ OnlyOnce(), KernelKey(~kernel_priv), CaKey(~ca_priv) ]->
@@ -39,7 +39,7 @@ rule initialize_environment:
 rule register_icu:
     let
       icu_pub = pk(~icu_priv) 
-      icu_cert = <'cert', $ICU, icu_pub, sign(<$ICU, icu_pub>, ~ca_priv)>
+      icu_cert = <'cert', $ICU, icu_pub, sign(<'icu', $ICU, icu_pub>, ~ca_priv)>
     in
     [
       Fr(~icu_priv),
@@ -69,7 +69,7 @@ rule reset_icu:
 /*********************************************************************/
 rule kernel_to_icu_1:
     let 
-      n_kernel_sig_k = sign(~n_kernel, kernel_priv)
+      n_kernel_sig_k = sign(<'kernel_nonce', ~n_kernel>, kernel_priv)
     in
     [ 
       Fr(~n_kernel),
@@ -88,16 +88,16 @@ rule kernel_to_icu_1:
 
 rule icu_to_kernel_1:
     let
-      n_kernel_sig_i = sign(n_kernel, icu_priv)
-      n_kernel_valid = verify(n_kernel_sig_k, n_kernel, kernel_pub)
+      n_kernel_sig_i = sign(<'kernel_nonce', n_kernel>, icu_priv)
+      n_kernel_valid = verify(n_kernel_sig_k, <'kernel_nonce', n_kernel>, kernel_pub)
 
-      n_icu_sig_i = sign(~n_icu, icu_priv)
+      n_icu_sig_i = sign(<'icu_nonce', ~n_icu>, icu_priv)
 
       kernel_cert = <'cert', kernel, kernel_pub, kernel_sig>
-      kernel_cert_valid = verify(kernel_sig, <kernel, kernel_pub>, ca_pub)
+      kernel_cert_valid = verify(kernel_sig, <'kernel', kernel, kernel_pub>, ca_pub)
 
       dh_icu_pub = 'g' ^ ~dh_icu_priv
-      dh_icu_pub_sig = sign(dh_icu_pub, icu_priv)
+      dh_icu_pub_sig = sign(<'icu_key_material', dh_icu_pub>, icu_priv)
     in
     [ 
       Fr(~n_icu), Fr(~dh_icu_priv),
@@ -124,18 +124,18 @@ rule icu_to_kernel_1:
 
 rule kernel_to_icu_2:
     let 
-      n_kernel_valid = verify(n_kernel_sig_i, n_kernel, icu_pub)
+      n_kernel_valid = verify(n_kernel_sig_i, <'kernel_nonce', n_kernel>, icu_pub)
       
-      n_icu_valid = verify(n_icu_sig_i, n_icu, icu_pub)
-      n_icu_sig_k = sign(n_icu, kernel_priv)
+      n_icu_valid = verify(n_icu_sig_i, <'icu_nonce', n_icu>, icu_pub)
+      n_icu_sig_k = sign(<'icu_nonce', n_icu>, kernel_priv)
 
       icu_cert = <'cert', icu, icu_pub, icu_sig>
-      icu_cert_valid = verify(icu_sig, <icu, icu_pub>, ca_pub)
+      icu_cert_valid = verify(icu_sig, <'icu', icu, icu_pub>, ca_pub)
 
       dh_kernel_pub = 'g' ^ ~dh_kernel_priv
-      dh_kernel_pub_sig = sign(dh_kernel_pub, kernel_priv)
+      dh_kernel_pub_sig = sign(<'kernel_key_material', dh_kernel_pub>, kernel_priv)
 
-      dh_icu_valid = verify(dh_icu_pub_sig, dh_icu_pub, icu_pub)
+      dh_icu_valid = verify(dh_icu_pub_sig, <'icu_key_material', dh_icu_pub>, icu_pub)
       dh_common = dh_icu_pub ^ ~dh_kernel_priv
     in
     [ 
@@ -155,20 +155,19 @@ rule kernel_to_icu_2:
       NotEq($Kernel, icu), 
 
       KernelDone($Kernel, icu, dh_common),
-
+      
       ProtocolStep('3'),
       BehaveKernel($Kernel)
     ]->
     [ 
-      KernelConnection($Kernel, icu, dh_common),
       Out(<'3', n_icu_sig_k, dh_kernel_pub, dh_kernel_pub_sig>)
     ]
 
 rule icu_to_kernel_2:
     let 
-      n_icu_valid = verify(n_icu_sig_k, n_icu, kernel_pub)
+      n_icu_valid = verify(n_icu_sig_k, <'icu_nonce', n_icu>, kernel_pub)
 
-      dh_kernel_valid = verify(dh_kernel_pub_sig, dh_kernel_pub, kernel_pub)
+      dh_kernel_valid = verify(dh_kernel_pub_sig, <'kernel_key_material', dh_kernel_pub>, kernel_pub)
       dh_common = dh_kernel_pub ^ dh_icu_priv
     in
     [ 
@@ -338,14 +337,27 @@ lemma attacker_does_not_know_symmetric_keys:
         )
   "
 
-/*
- * Proofs that the kernel trusting in a symmetic key means that the icu set this key up with that kernel
- */
-lemma kernel_trust_means_icu_done:
+lemma kernel_trust_means_icu_done [use_induction]:
   " All num_icu #n. RegisteredICUs(num_icu) @ #n 
     ==>
       All reset_num #r. TotalResets(reset_num) @ #r
-        ==>
+      ==>
+        (
+          All icu kernel common_key #i. 
+          ( KernelTrusts(kernel, icu, common_key) @ #i )
+          ==>
+          ( Ex #j. (#j < #i) & ICUDone(icu, kernel, common_key) @ #j )
+        )
+  "
+
+/*
+ * Proofs that the kernel trusting in a symmetic key means that the icu set this key up with that kernel
+ */
+lemma kernel_trust_means_icu_done [use_induction]:
+  " All num_icu #n. RegisteredICUs(num_icu) @ #n 
+    ==>
+      All reset_num #r. TotalResets(reset_num) @ #r
+      ==>
         (
           All icu kernel common_key #i. 
           ( KernelTrusts(kernel, icu, common_key) @ #i )
@@ -357,11 +369,11 @@ lemma kernel_trust_means_icu_done:
 /*
  * Proofs that the ICU trusting in a symmetic key means that the kernel set this key up with that icu
  */
-lemma icu_trust_means_kernel_done:
+lemma icu_trust_means_kernel_done [use_induction]:
   " All num_icu #n. RegisteredICUs(num_icu) @ #n 
     ==>
       All reset_num #r. TotalResets(reset_num) @ #r
-        ==>
+      ==>
         (
           All icu kernel common_key #i. 
           ( ICUTrusts(icu, kernel, common_key) @ #i )
