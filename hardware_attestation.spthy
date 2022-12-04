@@ -12,7 +12,7 @@ begin
 
 heuristic: O "hardware_attestation_oracle.py"
 
-builtins: hashing, signing, diffie-hellman, multiset, symmetric-encryption
+builtins: hashing, signing, diffie-hellman, multiset
 
 /*********************************************************************/
 /* Rules for setting up initial state                                */
@@ -91,20 +91,18 @@ rule icu_to_kernel_1:
       n_kernel_sig_i = sign(<'kernel_nonce', n_kernel>, icu_priv)
       n_kernel_valid = verify(n_kernel_sig_k, <'kernel_nonce', n_kernel>, kernel_pub)
 
-      n_icu_sig_i = sign(<'icu_nonce', ~n_icu>, icu_priv)
-
       kernel_cert = <'cert', kernel, kernel_pub, kernel_sig>
       kernel_cert_valid = verify(kernel_sig, <'kernel', kernel, kernel_pub>, ca_pub)
 
       dh_icu_pub = 'g' ^ ~dh_icu_priv
-      dh_icu_pub_sig = sign(<'icu_key_material', dh_icu_pub>, icu_priv)
+      icu_reply_sig = sign(<'icu_reply', ~n_icu, dh_icu_pub, n_kernel>, icu_priv)
     in
     [ 
       Fr(~n_icu), Fr(~dh_icu_priv),
       UninitializedIcu($ICU),
 
       In( <'1', n_kernel, n_kernel_sig_k, <'cert', kernel, kernel_pub, kernel_sig>> ),
-      
+
       !ICUPrivKey($ICU, icu_priv),
       !ICUCertificate($ICU, icu_cert),
       !CaPub(ca_pub)
@@ -114,35 +112,36 @@ rule icu_to_kernel_1:
       Eq(n_kernel_valid, true),
       NotEq($ICU, kernel), 
 
+      ICUReply($ICU, kernel, dh_icu_pub),
+
       ProtocolStep('2'),
       BehaveICU($ICU) 
     ]->
     [ 
       Icu_memory_1($ICU, ~dh_icu_priv, kernel_cert, ~n_icu),
-      Out( <'2', ~n_icu, n_icu_sig_i, n_kernel_sig_i, dh_icu_pub, dh_icu_pub_sig, icu_cert> )
+      Out( <'2', ~n_icu, n_kernel_sig_i, dh_icu_pub, icu_reply_sig, icu_cert> )
     ]
 
 rule kernel_to_icu_2:
     let 
       n_kernel_valid = verify(n_kernel_sig_i, <'kernel_nonce', n_kernel>, icu_pub)
       
-      n_icu_valid = verify(n_icu_sig_i, <'icu_nonce', n_icu>, icu_pub)
       n_icu_sig_k = sign(<'icu_nonce', n_icu>, kernel_priv)
 
       icu_cert = <'cert', icu, icu_pub, icu_sig>
       icu_cert_valid = verify(icu_sig, <'icu', icu, icu_pub>, ca_pub)
 
       dh_kernel_pub = 'g' ^ ~dh_kernel_priv
-      dh_kernel_pub_sig = sign(<'kernel_key_material', dh_kernel_pub>, kernel_priv)
+      kernel_reply_sig = sign(<'kernel_reply', dh_kernel_pub, n_icu>, kernel_priv)
 
-      dh_icu_valid = verify(dh_icu_pub_sig, <'icu_key_material', dh_icu_pub>, icu_pub)
+      icu_reply_valid = verify(icu_reply_sig, <'icu_reply', n_icu, dh_icu_pub, n_kernel>, icu_pub)
       dh_common = dh_icu_pub ^ ~dh_kernel_priv
     in
     [ 
       Kernel_memory_1($Kernel, n_kernel),
       Fr(~dh_kernel_priv),
 
-      In( <'2', n_icu, n_icu_sig_i, n_kernel_sig_i, dh_icu_pub, dh_icu_pub_sig, <'cert', icu, icu_pub, icu_sig>>),
+      In( <'2', n_icu, n_icu_sig_i, n_kernel_sig_i, dh_icu_pub, icu_reply_sig, <'cert', icu, icu_pub, icu_sig>>),
       
       !KernelPrivKey($Kernel, kernel_priv),
       !CaPub(ca_pub)
@@ -150,34 +149,34 @@ rule kernel_to_icu_2:
   --[ 
       Eq(n_kernel_valid, true),
       Eq(icu_cert_valid, true),
-      Eq(n_icu_valid, true),
-      Eq(dh_icu_valid, true),
+      Eq(icu_reply_valid, true),
       NotEq($Kernel, icu), 
 
       KernelDone($Kernel, icu, dh_common),
+      KernelTrust($Kernel, icu, dh_icu_pub),
       
       ProtocolStep('3'),
       BehaveKernel($Kernel)
     ]->
     [ 
-      Out(<'3', n_icu_sig_k, dh_kernel_pub, dh_kernel_pub_sig>)
+      Out(<'3', n_icu_sig_k, dh_kernel_pub, kernel_reply_sig>)
     ]
 
 rule icu_to_kernel_2:
     let 
       n_icu_valid = verify(n_icu_sig_k, <'icu_nonce', n_icu>, kernel_pub)
 
-      dh_kernel_valid = verify(dh_kernel_pub_sig, <'kernel_key_material', dh_kernel_pub>, kernel_pub)
+      kernel_reply_valid = verify(kernel_reply_sig, <'kernel_reply', dh_kernel_pub, n_icu>, kernel_pub)
       dh_common = dh_kernel_pub ^ dh_icu_priv
     in
     [ 
       Icu_memory_1($ICU, dh_icu_priv, <'cert', kernel, kernel_pub, kernel_sig>, n_icu),
 
-      In(<'3', n_icu_sig_k, dh_kernel_pub, dh_kernel_pub_sig>)
+      In(<'3', n_icu_sig_k, dh_kernel_pub, kernel_reply_sig>)
     ]
   --[ 
       Eq(n_icu_valid, true),
-      Eq(dh_kernel_valid, true),
+      Eq(kernel_reply_valid, true),
       NotEq($ICU, kernel), 
 
       ICUDone($ICU, kernel, dh_common),
@@ -185,47 +184,6 @@ rule icu_to_kernel_2:
       ProtocolStep('4'),
       BehaveICU($ICU) 
     ]-> 
-    [ 
-      ICUConnection($ICU, kernel, dh_common),
-      Out( <'4', senc('ICU_Ok', dh_common)> )
-    ]
-
-rule kernel_to_icu_3:
-    let
-      msg = sdec(enc_msg, dh_common)
-    in
-    [ 
-      KernelConnection($Kernel, icu, dh_common),
-
-      In( <'4', enc_msg> )
-    ]
-  --[ 
-      Eq(msg, 'ICU_Ok'),
-
-      KernelTrusts($Kernel, icu, dh_common),
-      ProtocolStep('5'),
-
-      BehaveKernel($Kernel)
-    ]->
-    [ Out( <'5', senc('Kernel_Ok', dh_common)> ) ]
-
-rule icu_to_kernel_3:
-    let
-      msg = sdec(enc_msg, dh_common)
-    in
-    [ 
-      ICUConnection($ICU, kernel, dh_common),
-
-      In( <'5', enc_msg> )
-    ]
-  --[ 
-      Eq(msg, 'Kernel_Ok'),
-
-      ICUTrusts($ICU, kernel, dh_common),
-      ProtocolStep('6'),
-
-      BehaveICU($ICU)
-    ]->
     [ ]
 
 /*********************************************************************/
@@ -266,25 +224,6 @@ lemma valid_session_can_be_created:
         & ICUDone(icu, kernel, common_key) @ #j
       )
   "
-
-/*
- * Proofs that it is possible to reach a state where icu & kernel trust the symmetric key they set up
- */
-lemma trust_can_be_established:
- exists-trace
- " /* Guide the prover to construct a valid protocol flow, ie. use one icu and do not reset */
-   (
-     ( All icu1 icu2 #i #j. RegisterICU(icu1) @ #i & RegisterICU(icu2) @ #j ==> icu1 = icu2 )
-     &  
-     not (Ex icu x #i. ResetIcu(icu, x) @ #i)
-   )
-   &
-   Ex kernel icu common_key #i #j.
-     (
-       KernelTrusts(kernel, icu, common_key) @ #i
-       & ICUTrusts(icu, kernel, common_key) @ #j
-     )
- "
 
 /*
  * Proofs that the protocol does not leak the kernels private keys
@@ -337,46 +276,30 @@ lemma attacker_does_not_know_symmetric_keys:
         )
   "
 
-lemma kernel_trust_means_icu_done [use_induction]:
+lemma kernel_trust_means_icu_reply [use_induction]:
   " All num_icu #n. RegisteredICUs(num_icu) @ #n 
     ==>
       All reset_num #r. TotalResets(reset_num) @ #r
       ==>
         (
-          All icu kernel common_key #i. 
-          ( KernelTrusts(kernel, icu, common_key) @ #i )
+          All icu kernel key_material #i. 
+          ( KernelTrust(kernel, icu, key_material) @ #i )
           ==>
-          ( Ex #j. (#j < #i) & ICUDone(icu, kernel, common_key) @ #j )
-        )
-  "
-
-/*
- * Proofs that the kernel trusting in a symmetic key means that the icu set this key up with that kernel
- */
-lemma kernel_trust_means_icu_done [use_induction]:
-  " All num_icu #n. RegisteredICUs(num_icu) @ #n 
-    ==>
-      All reset_num #r. TotalResets(reset_num) @ #r
-      ==>
-        (
-          All icu kernel common_key #i. 
-          ( KernelTrusts(kernel, icu, common_key) @ #i )
-          ==>
-          ( Ex #j. (#j < #i) & ICUDone(icu, kernel, common_key) @ #j )
+          ( Ex #j. (#j < #i) & ICUReply(icu, kernel, key_material) @ #j )
         )
   "
 
 /*
  * Proofs that the ICU trusting in a symmetic key means that the kernel set this key up with that icu
  */
-lemma icu_trust_means_kernel_done [use_induction]:
+lemma icu_done_means_kernel_done [use_induction]:
   " All num_icu #n. RegisteredICUs(num_icu) @ #n 
     ==>
       All reset_num #r. TotalResets(reset_num) @ #r
       ==>
         (
           All icu kernel common_key #i. 
-          ( ICUTrusts(icu, kernel, common_key) @ #i )
+          ( ICUDone(icu, kernel, common_key) @ #i )
           ==>
           ( Ex #j. (#j < #i) & KernelDone(kernel, icu, common_key) @ #j )
         )

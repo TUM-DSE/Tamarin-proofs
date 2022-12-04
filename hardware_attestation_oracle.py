@@ -13,24 +13,12 @@ lemma = sys.argv[1]
 for line in lines:
     num = line.split(':')[0]
 
-    if lemma == "attacker_does_not_know_symmetric_keys":
-
-        if ": !KU( ~dh_" in line \
-                or ": !KU( common_key" in line:
-            levels[0].append(num)
-        elif ": !KU(" in line and not ("sign" in line) and (
-            re.search(r".*\^.*inv", line) or  # x ^ ( inv(y) )
-            re.search(r".*\^\(.*(priv.*\*|\*.*priv)",
-                      line)  # x ^ ( priv * ... )
-        ):
-            levels[1].append(num)
-        elif not (": !KU( " in line and "sign" in line):
-            levels[2].append(num)
-        else:
-            levels[3].append(num)
-
-    elif lemma in ["kernel_trust_means_icu_done", "icu_trust_means_kernel_done"]:
+    if lemma in [ "kernel_trust_means_icu_reply", "icu_done_means_kernel_done", "attacker_does_not_know_symmetric_keys"]:
+        ktrust = lemma == "kernel_trust_means_icu_reply"
+        itrust = lemma == "icu_done_means_kernel_done"
+        
         priv_rx = r"~?\w*_priv\.?\d*"
+        none_rx = r"x^"
 
         matchers = [
             [
@@ -38,12 +26,14 @@ for line in lines:
             ], [
                 fr"last",
             ], [
-                fr"!KU\( 'g'\^\({priv_rx}\*{priv_rx}\) \)"
+                fr"!KU\( 'g'\^\({priv_rx}\*{priv_rx}\) \)",
             ], [
-                fr"!KU\( senc\('ICU_Ok', common_key\) \)",
-                fr"KernelConnection\( \$Kernel, icu, common_key \)",
+                fr"'icu_reply'",
+                fr"'kernel_reply'" if itrust else none_rx,
             ], [ 
-                fr"!KU\( 'g'\^\({priv_rx}\*{priv_rx}\*.*"
+                fr"!KU\( 'g'\^\({priv_rx}\*{priv_rx}\*.*",
+                fr"!KU\( sign\(<'icu', icu, .*x.*>, ~ca_priv\)" if ktrust else none_rx,
+                fr"!KU\( sign\(<'kernel', kernel, .*x.*>, ~ca_priv\)" if ktrust else none_rx,
             ]
         ]
         
