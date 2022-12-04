@@ -1,0 +1,5298 @@
+theory HardwareAttestation begin
+
+// Function signature and definition of the equational theory E
+
+builtins: diffie-hellman, multiset
+functions: fst/1, h/1, pair/2, pk/1, sign/2, snd/1, true/0, verify/3
+equations:
+    fst(<x.1, x.2>) = x.1,
+    snd(<x.1, x.2>) = x.2,
+    verify(sign(x.1, x.2), x.1, pk(x.2)) = true
+
+heuristic: O "hardware_attestation_oracle.py"
+
+rule (modulo E) initialize_environment:
+   [ Fr( ~ca_priv ), Fr( ~kernel_priv ) ]
+  --[ OnlyOnce( ), KernelKey( ~kernel_priv ), CaKey( ~ca_priv ) ]->
+   [
+   !CaPriv( ~ca_priv ), !CaPub( pk(~ca_priv) ),
+   !KernelPrivKey( $Kernel, ~kernel_priv ),
+   !KernelCertificate( $Kernel,
+                       <'cert', $Kernel, pk(~kernel_priv), 
+                        sign(<'kernel', $Kernel, pk(~kernel_priv)>, ~ca_priv)>
+   ),
+   NextICUCounter( '1' ), TotalResetCounter( '1' ), Out( pk(~ca_priv) ),
+   Out( pk(<'cert', $Kernel, pk(~kernel_priv), 
+            sign(<'kernel', $Kernel, pk(~kernel_priv)>, ~ca_priv)>)
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) register_icu:
+   [ Fr( ~icu_priv ), !CaPriv( ~ca_priv ), NextICUCounter( x ) ]
+  --[
+  IcuKey( ~icu_priv ), Unique( $ICU ), RegisterICU( $ICU ),
+  RegisteredICUs( x )
+  ]->
+   [
+   !ICUPrivKey( $ICU, ~icu_priv ),
+   !ICUCertificate( $ICU,
+                    <'cert', $ICU, pk(~icu_priv), 
+                     sign(<'icu', $ICU, pk(~icu_priv)>, ~ca_priv)>
+   ),
+   UninitializedIcu( $ICU ), IcuResetCounter( $ICU, '1' ),
+   NextICUCounter( ('1'+x) ),
+   Out( pk(<'cert', $ICU, pk(~icu_priv), 
+            sign(<'icu', $ICU, pk(~icu_priv)>, ~ca_priv)>)
+   )
+   ]
+
+  // loop breaker: [2]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) reset_icu:
+   [
+   Icu_memory_1( $ICU, ~dh_icu_priv, kernel_cert, ~n_icu ),
+   IcuResetCounter( $ICU, x ), TotalResetCounter( y )
+   ]
+  --[ ResetIcu( $ICU, ('1'+x) ), TotalResets( ('1'+y) ) ]->
+   [
+   UninitializedIcu( $ICU ), IcuResetCounter( $ICU, ('1'+x) ),
+   TotalResetCounter( ('1'+y) )
+   ]
+
+  // loop breakers: [2,1,0]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) kernel_to_icu_1:
+   [
+   Fr( ~n_kernel ), !KernelPrivKey( $Kernel, kernel_priv ),
+   !KernelCertificate( $Kernel, kernel_cert )
+   ]
+  --[ ProtocolStep( '1' ), BehaveKernel( $Kernel ) ]->
+   [
+   Kernel_memory_1( $Kernel, ~n_kernel ),
+   Out( <'1', ~n_kernel, sign(<'kernel_nonce', ~n_kernel>, kernel_priv), 
+         kernel_cert>
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) icu_to_kernel_1:
+   [
+   Fr( ~n_icu ), Fr( ~dh_icu_priv ), UninitializedIcu( $ICU ),
+   In( <'1', n_kernel, n_kernel_sig_k, 'cert', kernel, kernel_pub, 
+        kernel_sig>
+   ),
+   !ICUPrivKey( $ICU, icu_priv ), !ICUCertificate( $ICU, icu_cert ),
+   !CaPub( ca_pub )
+   ]
+  --[
+  Eq( verify(kernel_sig, <'kernel', kernel, kernel_pub>, ca_pub), true ),
+  Eq( verify(n_kernel_sig_k, <'kernel_nonce', n_kernel>, kernel_pub), true
+  ),
+  NotEq( $ICU, kernel ), ICUReply( $ICU, kernel, 'g'^~dh_icu_priv ),
+  ProtocolStep( '2' ), BehaveICU( $ICU )
+  ]->
+   [
+   Icu_memory_1( $ICU, ~dh_icu_priv,
+                 <'cert', kernel, kernel_pub, kernel_sig>, ~n_icu
+   ),
+   Out( <'2', ~n_icu, sign(<'kernel_nonce', n_kernel>, icu_priv), 
+         'g'^~dh_icu_priv, 
+         sign(<'icu_reply', ~n_icu, 'g'^~dh_icu_priv, n_kernel>, icu_priv), 
+         icu_cert>
+   )
+   ]
+
+  /*
+  rule (modulo AC) icu_to_kernel_1:
+     [
+     Fr( ~n_icu ), Fr( ~dh_icu_priv ), UninitializedIcu( $ICU ),
+     In( <'1', n_kernel, n_kernel_sig_k, 'cert', kernel, kernel_pub, 
+          kernel_sig>
+     ),
+     !ICUPrivKey( $ICU, icu_priv ), !ICUCertificate( $ICU, icu_cert ),
+     !CaPub( ca_pub )
+     ]
+    --[
+    Eq( z, true ), Eq( z.1, true ), NotEq( $ICU, kernel ),
+    ICUReply( $ICU, kernel, 'g'^~dh_icu_priv ), ProtocolStep( '2' ),
+    BehaveICU( $ICU )
+    ]->
+     [
+     Icu_memory_1( $ICU, ~dh_icu_priv,
+                   <'cert', kernel, kernel_pub, kernel_sig>, ~n_icu
+     ),
+     Out( <'2', ~n_icu, sign(<'kernel_nonce', n_kernel>, icu_priv), 
+           'g'^~dh_icu_priv, 
+           sign(<'icu_reply', ~n_icu, 'g'^~dh_icu_priv, n_kernel>, icu_priv), 
+           icu_cert>
+     )
+     ]
+    variants (modulo AC)
+    1. ca_pub
+             = ca_pub.28
+       kernel
+             = kernel.31
+       kernel_pub
+             = kernel_pub.32
+       kernel_sig
+             = kernel_sig.33
+       n_kernel
+             = n_kernel.34
+       n_kernel_sig_k
+             = n_kernel_sig_k.35
+       z     = verify(kernel_sig.33, <'kernel', kernel.31, kernel_pub.32>,
+                      ca_pub.28)
+       z.1   = verify(n_kernel_sig_k.35, <'kernel_nonce', n_kernel.34>,
+                      kernel_pub.32)
+    
+    2. ca_pub
+             = ca_pub.171
+       kernel
+             = kernel.174
+       kernel_pub
+             = pk(x.337)
+       kernel_sig
+             = kernel_sig.176
+       n_kernel
+             = n_kernel.177
+       n_kernel_sig_k
+             = sign(<'kernel_nonce', n_kernel.177>, x.337)
+       z     = verify(kernel_sig.176, <'kernel', kernel.174, pk(x.337)>,
+                      ca_pub.171)
+       z.1   = true
+    
+    3. ca_pub
+             = pk(x.310)
+       kernel
+             = kernel.159
+       kernel_pub
+             = kernel_pub.160
+       kernel_sig
+             = sign(<'kernel', kernel.159, kernel_pub.160>, x.310)
+       n_kernel
+             = n_kernel.162
+       n_kernel_sig_k
+             = n_kernel_sig_k.163
+       z     = true
+       z.1   = verify(n_kernel_sig_k.163, <'kernel_nonce', n_kernel.162>,
+                      kernel_pub.160)
+    
+    4. ca_pub
+             = pk(x.314)
+       kernel
+             = kernel.163
+       kernel_pub
+             = pk(x.318)
+       kernel_sig
+             = sign(<'kernel', kernel.163, pk(x.318)>, x.314)
+       n_kernel
+             = n_kernel.166
+       n_kernel_sig_k
+             = sign(<'kernel_nonce', n_kernel.166>, x.318)
+       z     = true
+       z.1   = true
+  */
+
+rule (modulo E) kernel_to_icu_2:
+   [
+   Kernel_memory_1( $Kernel, n_kernel ), Fr( ~dh_kernel_priv ),
+   In( <'2', n_icu, n_icu_sig_i, n_kernel_sig_i, dh_icu_pub, icu_reply_sig, 
+        'cert', icu, icu_pub, icu_sig>
+   ),
+   !KernelPrivKey( $Kernel, kernel_priv ), !CaPub( ca_pub )
+   ]
+  --[
+  Eq( verify(n_kernel_sig_i, <'kernel_nonce', n_kernel>, icu_pub), true ),
+  Eq( verify(icu_sig, <'icu', icu, icu_pub>, ca_pub), true ),
+  Eq( verify(icu_reply_sig, <'icu_reply', n_icu, dh_icu_pub, n_kernel>,
+             icu_pub),
+      true
+  ),
+  NotEq( $Kernel, icu ),
+  KernelDone( $Kernel, icu, dh_icu_pub^~dh_kernel_priv ),
+  KernelTrust( $Kernel, icu, dh_icu_pub ), ProtocolStep( '3' ),
+  BehaveKernel( $Kernel )
+  ]->
+   [
+   Out( <'3', sign(<'icu_nonce', n_icu>, kernel_priv), 'g'^~dh_kernel_priv, 
+         sign(<'kernel_reply', 'g'^~dh_kernel_priv, n_icu>, kernel_priv)>
+   )
+   ]
+
+  /*
+  rule (modulo AC) kernel_to_icu_2:
+     [
+     Kernel_memory_1( $Kernel, n_kernel ), Fr( ~dh_kernel_priv ),
+     In( <'2', n_icu, n_icu_sig_i, n_kernel_sig_i, dh_icu_pub, icu_reply_sig, 
+          'cert', icu, icu_pub, icu_sig>
+     ),
+     !KernelPrivKey( $Kernel, kernel_priv ), !CaPub( ca_pub )
+     ]
+    --[
+    Eq( z, true ), Eq( z.1, true ), Eq( z.2, true ), NotEq( $Kernel, icu ),
+    KernelDone( $Kernel, icu, z.3 ), KernelTrust( $Kernel, icu, dh_icu_pub ),
+    ProtocolStep( '3' ), BehaveKernel( $Kernel )
+    ]->
+     [
+     Out( <'3', sign(<'icu_nonce', n_icu>, kernel_priv), 'g'^~dh_kernel_priv, 
+           sign(<'kernel_reply', 'g'^~dh_kernel_priv, n_icu>, kernel_priv)>
+     )
+     ]
+    variants (modulo AC)
+     1. ~dh_kernel_priv
+              = ~dh_kernel_priv.36
+        ca_pub
+              = ca_pub.37
+        dh_icu_pub
+              = dh_icu_pub.38
+        icu   = icu.39
+        icu_pub
+              = icu_pub.40
+        icu_reply_sig
+              = icu_reply_sig.41
+        icu_sig
+              = icu_sig.42
+        n_icu = n_icu.44
+        n_kernel
+              = n_kernel.46
+        n_kernel_sig_i
+              = n_kernel_sig_i.47
+        z     = verify(n_kernel_sig_i.47, <'kernel_nonce', n_kernel.46>,
+                       icu_pub.40)
+        z.1   = verify(icu_sig.42, <'icu', icu.39, icu_pub.40>, ca_pub.37)
+        z.2   = verify(icu_reply_sig.41,
+                       <'icu_reply', n_icu.44, dh_icu_pub.38, n_kernel.46>, icu_pub.40)
+        z.3   = dh_icu_pub.38^~dh_kernel_priv.36
+    
+     2. ~dh_kernel_priv
+              = ~dh_kernel_priv.46
+        ca_pub
+              = ca_pub.47
+        dh_icu_pub
+              = z.67^inv(~dh_kernel_priv.46)
+        icu   = icu.49
+        icu_pub
+              = icu_pub.50
+        icu_reply_sig
+              = icu_reply_sig.51
+        icu_sig
+              = icu_sig.52
+        n_icu = n_icu.54
+        n_kernel
+              = n_kernel.56
+        n_kernel_sig_i
+              = n_kernel_sig_i.57
+        z     = verify(n_kernel_sig_i.57, <'kernel_nonce', n_kernel.56>,
+                       icu_pub.50)
+        z.1   = verify(icu_sig.52, <'icu', icu.49, icu_pub.50>, ca_pub.47)
+        z.2   = verify(icu_reply_sig.51,
+                       <'icu_reply', n_icu.54, z.67^inv(~dh_kernel_priv.46), n_kernel.56>,
+                       icu_pub.50)
+        z.3   = z.67
+    
+     3. ~dh_kernel_priv
+              = ~dh_kernel_priv.215
+        ca_pub
+              = ca_pub.216
+        dh_icu_pub
+              = dh_icu_pub.217
+        icu   = icu.218
+        icu_pub
+              = pk(x.427)
+        icu_reply_sig
+              = icu_reply_sig.220
+        icu_sig
+              = icu_sig.221
+        n_icu = n_icu.223
+        n_kernel
+              = n_kernel.225
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.225>, x.427)
+        z     = true
+        z.1   = verify(icu_sig.221, <'icu', icu.218, pk(x.427)>, ca_pub.216)
+        z.2   = verify(icu_reply_sig.220,
+                       <'icu_reply', n_icu.223, dh_icu_pub.217, n_kernel.225>, pk(x.427))
+        z.3   = dh_icu_pub.217^~dh_kernel_priv.215
+    
+     4. ~dh_kernel_priv
+              = ~dh_kernel_priv.215
+        ca_pub
+              = pk(x.427)
+        dh_icu_pub
+              = dh_icu_pub.217
+        icu   = icu.218
+        icu_pub
+              = icu_pub.219
+        icu_reply_sig
+              = icu_reply_sig.220
+        icu_sig
+              = sign(<'icu', icu.218, icu_pub.219>, x.427)
+        n_icu = n_icu.223
+        n_kernel
+              = n_kernel.225
+        n_kernel_sig_i
+              = n_kernel_sig_i.226
+        z     = verify(n_kernel_sig_i.226, <'kernel_nonce', n_kernel.225>,
+                       icu_pub.219)
+        z.1   = true
+        z.2   = verify(icu_reply_sig.220,
+                       <'icu_reply', n_icu.223, dh_icu_pub.217, n_kernel.225>, icu_pub.219)
+        z.3   = dh_icu_pub.217^~dh_kernel_priv.215
+    
+     5. ~dh_kernel_priv
+              = ~dh_kernel_priv.216
+        ca_pub
+              = ca_pub.217
+        dh_icu_pub
+              = x.428^x.429
+        icu   = icu.219
+        icu_pub
+              = icu_pub.220
+        icu_reply_sig
+              = icu_reply_sig.221
+        icu_sig
+              = icu_sig.222
+        n_icu = n_icu.224
+        n_kernel
+              = n_kernel.226
+        n_kernel_sig_i
+              = n_kernel_sig_i.227
+        z     = verify(n_kernel_sig_i.227, <'kernel_nonce', n_kernel.226>,
+                       icu_pub.220)
+        z.1   = verify(icu_sig.222, <'icu', icu.219, icu_pub.220>, ca_pub.217)
+        z.2   = verify(icu_reply_sig.221,
+                       <'icu_reply', n_icu.224, x.428^x.429, n_kernel.226>, icu_pub.220)
+        z.3   = x.428^(~dh_kernel_priv.216*x.429)
+    
+     6. ~dh_kernel_priv
+              = ~dh_kernel_priv.216
+        ca_pub
+              = pk(x.429)
+        dh_icu_pub
+              = z.237^inv(~dh_kernel_priv.216)
+        icu   = icu.219
+        icu_pub
+              = icu_pub.220
+        icu_reply_sig
+              = icu_reply_sig.221
+        icu_sig
+              = sign(<'icu', icu.219, icu_pub.220>, x.429)
+        n_icu = n_icu.224
+        n_kernel
+              = n_kernel.226
+        n_kernel_sig_i
+              = n_kernel_sig_i.227
+        z     = verify(n_kernel_sig_i.227, <'kernel_nonce', n_kernel.226>,
+                       icu_pub.220)
+        z.1   = true
+        z.2   = verify(icu_reply_sig.221,
+                       <'icu_reply', n_icu.224, z.237^inv(~dh_kernel_priv.216), n_kernel.226>,
+                       icu_pub.220)
+        z.3   = z.237
+    
+     7. ~dh_kernel_priv
+              = ~dh_kernel_priv.217
+        ca_pub
+              = ca_pub.218
+        dh_icu_pub
+              = dh_icu_pub.219
+        icu   = icu.220
+        icu_pub
+              = pk(x.431)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.225, dh_icu_pub.219, n_kernel.227>, x.431)
+        icu_sig
+              = icu_sig.223
+        n_icu = n_icu.225
+        n_kernel
+              = n_kernel.227
+        n_kernel_sig_i
+              = n_kernel_sig_i.228
+        z     = verify(n_kernel_sig_i.228, <'kernel_nonce', n_kernel.227>,
+                       pk(x.431))
+        z.1   = verify(icu_sig.223, <'icu', icu.220, pk(x.431)>, ca_pub.218)
+        z.2   = true
+        z.3   = dh_icu_pub.219^~dh_kernel_priv.217
+    
+     8. ~dh_kernel_priv
+              = ~dh_kernel_priv.217
+        ca_pub
+              = ca_pub.218
+        dh_icu_pub
+              = dh_icu_pub.219
+        icu   = icu.220
+        icu_pub
+              = pk(x.431)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.225, dh_icu_pub.219, n_kernel.227>, x.431)
+        icu_sig
+              = icu_sig.223
+        n_icu = n_icu.225
+        n_kernel
+              = n_kernel.227
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.227>, x.431)
+        z     = true
+        z.1   = verify(icu_sig.223, <'icu', icu.220, pk(x.431)>, ca_pub.218)
+        z.2   = true
+        z.3   = dh_icu_pub.219^~dh_kernel_priv.217
+    
+     9. ~dh_kernel_priv
+              = ~dh_kernel_priv.217
+        ca_pub
+              = pk(x.429)
+        dh_icu_pub
+              = x.430^x.431
+        icu   = icu.220
+        icu_pub
+              = icu_pub.221
+        icu_reply_sig
+              = icu_reply_sig.222
+        icu_sig
+              = sign(<'icu', icu.220, icu_pub.221>, x.429)
+        n_icu = n_icu.225
+        n_kernel
+              = n_kernel.227
+        n_kernel_sig_i
+              = n_kernel_sig_i.228
+        z     = verify(n_kernel_sig_i.228, <'kernel_nonce', n_kernel.227>,
+                       icu_pub.221)
+        z.1   = true
+        z.2   = verify(icu_reply_sig.222,
+                       <'icu_reply', n_icu.225, x.430^x.431, n_kernel.227>, icu_pub.221)
+        z.3   = x.430^(~dh_kernel_priv.217*x.431)
+    
+    10. ~dh_kernel_priv
+              = ~dh_kernel_priv.218
+        ca_pub
+              = ca_pub.219
+        dh_icu_pub
+              = x.430^x.431
+        icu   = icu.221
+        icu_pub
+              = pk(x.433)
+        icu_reply_sig
+              = icu_reply_sig.223
+        icu_sig
+              = icu_sig.224
+        n_icu = n_icu.226
+        n_kernel
+              = n_kernel.228
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.228>, x.433)
+        z     = true
+        z.1   = verify(icu_sig.224, <'icu', icu.221, pk(x.433)>, ca_pub.219)
+        z.2   = verify(icu_reply_sig.223,
+                       <'icu_reply', n_icu.226, x.430^x.431, n_kernel.228>, pk(x.433))
+        z.3   = x.430^(~dh_kernel_priv.218*x.431)
+    
+    11. ~dh_kernel_priv
+              = ~dh_kernel_priv.218
+        ca_pub
+              = ca_pub.219
+        dh_icu_pub
+              = x.430^x.431
+        icu   = icu.221
+        icu_pub
+              = pk(x.433)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.226, x.430^x.431, n_kernel.228>, x.433)
+        icu_sig
+              = icu_sig.224
+        n_icu = n_icu.226
+        n_kernel
+              = n_kernel.228
+        n_kernel_sig_i
+              = n_kernel_sig_i.229
+        z     = verify(n_kernel_sig_i.229, <'kernel_nonce', n_kernel.228>,
+                       pk(x.433))
+        z.1   = verify(icu_sig.224, <'icu', icu.221, pk(x.433)>, ca_pub.219)
+        z.2   = true
+        z.3   = x.430^(~dh_kernel_priv.218*x.431)
+    
+    12. ~dh_kernel_priv
+              = ~dh_kernel_priv.218
+        ca_pub
+              = ca_pub.219
+        dh_icu_pub
+              = x.430^x.431
+        icu   = icu.221
+        icu_pub
+              = pk(x.433)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.226, x.430^x.431, n_kernel.228>, x.433)
+        icu_sig
+              = icu_sig.224
+        n_icu = n_icu.226
+        n_kernel
+              = n_kernel.228
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.228>, x.433)
+        z     = true
+        z.1   = verify(icu_sig.224, <'icu', icu.221, pk(x.433)>, ca_pub.219)
+        z.2   = true
+        z.3   = x.430^(~dh_kernel_priv.218*x.431)
+    
+    13. ~dh_kernel_priv
+              = ~dh_kernel_priv.218
+        ca_pub
+              = ca_pub.219
+        dh_icu_pub
+              = x.432^inv((~dh_kernel_priv.218*x.433))
+        icu   = icu.221
+        icu_pub
+              = icu_pub.222
+        icu_reply_sig
+              = icu_reply_sig.223
+        icu_sig
+              = icu_sig.224
+        n_icu = n_icu.226
+        n_kernel
+              = n_kernel.228
+        n_kernel_sig_i
+              = n_kernel_sig_i.229
+        z     = verify(n_kernel_sig_i.229, <'kernel_nonce', n_kernel.228>,
+                       icu_pub.222)
+        z.1   = verify(icu_sig.224, <'icu', icu.221, icu_pub.222>, ca_pub.219)
+        z.2   = verify(icu_reply_sig.223,
+                       <'icu_reply', n_icu.226, x.432^inv((~dh_kernel_priv.218*x.433)), 
+                        n_kernel.228>,
+                       icu_pub.222)
+        z.3   = x.432^inv(x.433)
+    
+    14. ~dh_kernel_priv
+              = ~dh_kernel_priv.218
+        ca_pub
+              = ca_pub.219
+        dh_icu_pub
+              = x.432^(x.433*inv(~dh_kernel_priv.218))
+        icu   = icu.221
+        icu_pub
+              = icu_pub.222
+        icu_reply_sig
+              = icu_reply_sig.223
+        icu_sig
+              = icu_sig.224
+        n_icu = n_icu.226
+        n_kernel
+              = n_kernel.228
+        n_kernel_sig_i
+              = n_kernel_sig_i.229
+        z     = verify(n_kernel_sig_i.229, <'kernel_nonce', n_kernel.228>,
+                       icu_pub.222)
+        z.1   = verify(icu_sig.224, <'icu', icu.221, icu_pub.222>, ca_pub.219)
+        z.2   = verify(icu_reply_sig.223,
+                       <'icu_reply', n_icu.226, x.432^(x.433*inv(~dh_kernel_priv.218)), 
+                        n_kernel.228>,
+                       icu_pub.222)
+        z.3   = x.432^x.433
+    
+    15. ~dh_kernel_priv
+              = ~dh_kernel_priv.218
+        ca_pub
+              = pk(x.430)
+        dh_icu_pub
+              = dh_icu_pub.220
+        icu   = icu.221
+        icu_pub
+              = pk(x.433)
+        icu_reply_sig
+              = icu_reply_sig.223
+        icu_sig
+              = sign(<'icu', icu.221, pk(x.433)>, x.430)
+        n_icu = n_icu.226
+        n_kernel
+              = n_kernel.228
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.228>, x.433)
+        z     = true
+        z.1   = true
+        z.2   = verify(icu_reply_sig.223,
+                       <'icu_reply', n_icu.226, dh_icu_pub.220, n_kernel.228>, pk(x.433))
+        z.3   = dh_icu_pub.220^~dh_kernel_priv.218
+    
+    16. ~dh_kernel_priv
+              = ~dh_kernel_priv.218
+        ca_pub
+              = pk(x.430)
+        dh_icu_pub
+              = dh_icu_pub.220
+        icu   = icu.221
+        icu_pub
+              = pk(x.433)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.226, dh_icu_pub.220, n_kernel.228>, x.433)
+        icu_sig
+              = sign(<'icu', icu.221, pk(x.433)>, x.430)
+        n_icu = n_icu.226
+        n_kernel
+              = n_kernel.228
+        n_kernel_sig_i
+              = n_kernel_sig_i.229
+        z     = verify(n_kernel_sig_i.229, <'kernel_nonce', n_kernel.228>,
+                       pk(x.433))
+        z.1   = true
+        z.2   = true
+        z.3   = dh_icu_pub.220^~dh_kernel_priv.218
+    
+    17. ~dh_kernel_priv
+              = ~dh_kernel_priv.218
+        ca_pub
+              = pk(x.430)
+        dh_icu_pub
+              = dh_icu_pub.220
+        icu   = icu.221
+        icu_pub
+              = pk(x.433)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.226, dh_icu_pub.220, n_kernel.228>, x.433)
+        icu_sig
+              = sign(<'icu', icu.221, pk(x.433)>, x.430)
+        n_icu = n_icu.226
+        n_kernel
+              = n_kernel.228
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.228>, x.433)
+        z     = true
+        z.1   = true
+        z.2   = true
+        z.3   = dh_icu_pub.220^~dh_kernel_priv.218
+    
+    18. ~dh_kernel_priv
+              = ~dh_kernel_priv.218
+        ca_pub
+              = pk(x.431)
+        dh_icu_pub
+              = x.432^inv((~dh_kernel_priv.218*x.433))
+        icu   = icu.221
+        icu_pub
+              = icu_pub.222
+        icu_reply_sig
+              = icu_reply_sig.223
+        icu_sig
+              = sign(<'icu', icu.221, icu_pub.222>, x.431)
+        n_icu = n_icu.226
+        n_kernel
+              = n_kernel.228
+        n_kernel_sig_i
+              = n_kernel_sig_i.229
+        z     = verify(n_kernel_sig_i.229, <'kernel_nonce', n_kernel.228>,
+                       icu_pub.222)
+        z.1   = true
+        z.2   = verify(icu_reply_sig.223,
+                       <'icu_reply', n_icu.226, x.432^inv((~dh_kernel_priv.218*x.433)), 
+                        n_kernel.228>,
+                       icu_pub.222)
+        z.3   = x.432^inv(x.433)
+    
+    19. ~dh_kernel_priv
+              = ~dh_kernel_priv.218
+        ca_pub
+              = pk(x.431)
+        dh_icu_pub
+              = x.432^(x.433*inv(~dh_kernel_priv.218))
+        icu   = icu.221
+        icu_pub
+              = icu_pub.222
+        icu_reply_sig
+              = icu_reply_sig.223
+        icu_sig
+              = sign(<'icu', icu.221, icu_pub.222>, x.431)
+        n_icu = n_icu.226
+        n_kernel
+              = n_kernel.228
+        n_kernel_sig_i
+              = n_kernel_sig_i.229
+        z     = verify(n_kernel_sig_i.229, <'kernel_nonce', n_kernel.228>,
+                       icu_pub.222)
+        z.1   = true
+        z.2   = verify(icu_reply_sig.223,
+                       <'icu_reply', n_icu.226, x.432^(x.433*inv(~dh_kernel_priv.218)), 
+                        n_kernel.228>,
+                       icu_pub.222)
+        z.3   = x.432^x.433
+    
+    20. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = ca_pub.220
+        dh_icu_pub
+              = z.240^inv(~dh_kernel_priv.219)
+        icu   = icu.222
+        icu_pub
+              = pk(x.435)
+        icu_reply_sig
+              = icu_reply_sig.224
+        icu_sig
+              = icu_sig.225
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.229>, x.435)
+        z     = true
+        z.1   = verify(icu_sig.225, <'icu', icu.222, pk(x.435)>, ca_pub.220)
+        z.2   = verify(icu_reply_sig.224,
+                       <'icu_reply', n_icu.227, z.240^inv(~dh_kernel_priv.219), n_kernel.229>,
+                       pk(x.435))
+        z.3   = z.240
+    
+    21. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = ca_pub.220
+        dh_icu_pub
+              = z.240^inv(~dh_kernel_priv.219)
+        icu   = icu.222
+        icu_pub
+              = pk(x.435)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.227, z.240^inv(~dh_kernel_priv.219), 
+                      n_kernel.229>,
+                     x.435)
+        icu_sig
+              = icu_sig.225
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = n_kernel_sig_i.230
+        z     = verify(n_kernel_sig_i.230, <'kernel_nonce', n_kernel.229>,
+                       pk(x.435))
+        z.1   = verify(icu_sig.225, <'icu', icu.222, pk(x.435)>, ca_pub.220)
+        z.2   = true
+        z.3   = z.240
+    
+    22. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = ca_pub.220
+        dh_icu_pub
+              = z.240^inv(~dh_kernel_priv.219)
+        icu   = icu.222
+        icu_pub
+              = pk(x.435)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.227, z.240^inv(~dh_kernel_priv.219), 
+                      n_kernel.229>,
+                     x.435)
+        icu_sig
+              = icu_sig.225
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.229>, x.435)
+        z     = true
+        z.1   = verify(icu_sig.225, <'icu', icu.222, pk(x.435)>, ca_pub.220)
+        z.2   = true
+        z.3   = z.240
+    
+    23. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = ca_pub.220
+        dh_icu_pub
+              = x.433^(x.434*inv((~dh_kernel_priv.219*x.435)))
+        icu   = icu.222
+        icu_pub
+              = icu_pub.223
+        icu_reply_sig
+              = icu_reply_sig.224
+        icu_sig
+              = icu_sig.225
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = n_kernel_sig_i.230
+        z     = verify(n_kernel_sig_i.230, <'kernel_nonce', n_kernel.229>,
+                       icu_pub.223)
+        z.1   = verify(icu_sig.225, <'icu', icu.222, icu_pub.223>, ca_pub.220)
+        z.2   = verify(icu_reply_sig.224,
+                       <'icu_reply', n_icu.227, x.433^(x.434*inv((~dh_kernel_priv.219*x.435))), 
+                        n_kernel.229>,
+                       icu_pub.223)
+        z.3   = x.433^(x.434*inv(x.435))
+    
+    24. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = pk(x.431)
+        dh_icu_pub
+              = x.432^x.433
+        icu   = icu.222
+        icu_pub
+              = pk(x.435)
+        icu_reply_sig
+              = icu_reply_sig.224
+        icu_sig
+              = sign(<'icu', icu.222, pk(x.435)>, x.431)
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.229>, x.435)
+        z     = true
+        z.1   = true
+        z.2   = verify(icu_reply_sig.224,
+                       <'icu_reply', n_icu.227, x.432^x.433, n_kernel.229>, pk(x.435))
+        z.3   = x.432^(~dh_kernel_priv.219*x.433)
+    
+    25. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = pk(x.431)
+        dh_icu_pub
+              = x.432^x.433
+        icu   = icu.222
+        icu_pub
+              = pk(x.435)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.227, x.432^x.433, n_kernel.229>, x.435)
+        icu_sig
+              = sign(<'icu', icu.222, pk(x.435)>, x.431)
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = n_kernel_sig_i.230
+        z     = verify(n_kernel_sig_i.230, <'kernel_nonce', n_kernel.229>,
+                       pk(x.435))
+        z.1   = true
+        z.2   = true
+        z.3   = x.432^(~dh_kernel_priv.219*x.433)
+    
+    26. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = pk(x.431)
+        dh_icu_pub
+              = x.432^x.433
+        icu   = icu.222
+        icu_pub
+              = pk(x.435)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.227, x.432^x.433, n_kernel.229>, x.435)
+        icu_sig
+              = sign(<'icu', icu.222, pk(x.435)>, x.431)
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.229>, x.435)
+        z     = true
+        z.1   = true
+        z.2   = true
+        z.3   = x.432^(~dh_kernel_priv.219*x.433)
+    
+    27. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = pk(x.432)
+        dh_icu_pub
+              = z.240^inv(~dh_kernel_priv.219)
+        icu   = icu.222
+        icu_pub
+              = pk(x.435)
+        icu_reply_sig
+              = icu_reply_sig.224
+        icu_sig
+              = sign(<'icu', icu.222, pk(x.435)>, x.432)
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.229>, x.435)
+        z     = true
+        z.1   = true
+        z.2   = verify(icu_reply_sig.224,
+                       <'icu_reply', n_icu.227, z.240^inv(~dh_kernel_priv.219), n_kernel.229>,
+                       pk(x.435))
+        z.3   = z.240
+    
+    28. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = pk(x.432)
+        dh_icu_pub
+              = z.240^inv(~dh_kernel_priv.219)
+        icu   = icu.222
+        icu_pub
+              = pk(x.435)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.227, z.240^inv(~dh_kernel_priv.219), 
+                      n_kernel.229>,
+                     x.435)
+        icu_sig
+              = sign(<'icu', icu.222, pk(x.435)>, x.432)
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = n_kernel_sig_i.230
+        z     = verify(n_kernel_sig_i.230, <'kernel_nonce', n_kernel.229>,
+                       pk(x.435))
+        z.1   = true
+        z.2   = true
+        z.3   = z.240
+    
+    29. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = pk(x.432)
+        dh_icu_pub
+              = z.240^inv(~dh_kernel_priv.219)
+        icu   = icu.222
+        icu_pub
+              = pk(x.435)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.227, z.240^inv(~dh_kernel_priv.219), 
+                      n_kernel.229>,
+                     x.435)
+        icu_sig
+              = sign(<'icu', icu.222, pk(x.435)>, x.432)
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.229>, x.435)
+        z     = true
+        z.1   = true
+        z.2   = true
+        z.3   = z.240
+    
+    30. ~dh_kernel_priv
+              = ~dh_kernel_priv.219
+        ca_pub
+              = pk(x.432)
+        dh_icu_pub
+              = x.433^(x.434*inv((~dh_kernel_priv.219*x.435)))
+        icu   = icu.222
+        icu_pub
+              = icu_pub.223
+        icu_reply_sig
+              = icu_reply_sig.224
+        icu_sig
+              = sign(<'icu', icu.222, icu_pub.223>, x.432)
+        n_icu = n_icu.227
+        n_kernel
+              = n_kernel.229
+        n_kernel_sig_i
+              = n_kernel_sig_i.230
+        z     = verify(n_kernel_sig_i.230, <'kernel_nonce', n_kernel.229>,
+                       icu_pub.223)
+        z.1   = true
+        z.2   = verify(icu_reply_sig.224,
+                       <'icu_reply', n_icu.227, x.433^(x.434*inv((~dh_kernel_priv.219*x.435))), 
+                        n_kernel.229>,
+                       icu_pub.223)
+        z.3   = x.433^(x.434*inv(x.435))
+    
+    31. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = ca_pub.221
+        dh_icu_pub
+              = x.434^inv((~dh_kernel_priv.220*x.435))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = icu_reply_sig.225
+        icu_sig
+              = icu_sig.226
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.230>, x.437)
+        z     = true
+        z.1   = verify(icu_sig.226, <'icu', icu.223, pk(x.437)>, ca_pub.221)
+        z.2   = verify(icu_reply_sig.225,
+                       <'icu_reply', n_icu.228, x.434^inv((~dh_kernel_priv.220*x.435)), 
+                        n_kernel.230>,
+                       pk(x.437))
+        z.3   = x.434^inv(x.435)
+    
+    32. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = ca_pub.221
+        dh_icu_pub
+              = x.434^inv((~dh_kernel_priv.220*x.435))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.228, x.434^inv((~dh_kernel_priv.220*x.435)), 
+                      n_kernel.230>,
+                     x.437)
+        icu_sig
+              = icu_sig.226
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = n_kernel_sig_i.231
+        z     = verify(n_kernel_sig_i.231, <'kernel_nonce', n_kernel.230>,
+                       pk(x.437))
+        z.1   = verify(icu_sig.226, <'icu', icu.223, pk(x.437)>, ca_pub.221)
+        z.2   = true
+        z.3   = x.434^inv(x.435)
+    
+    33. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = ca_pub.221
+        dh_icu_pub
+              = x.434^inv((~dh_kernel_priv.220*x.435))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.228, x.434^inv((~dh_kernel_priv.220*x.435)), 
+                      n_kernel.230>,
+                     x.437)
+        icu_sig
+              = icu_sig.226
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.230>, x.437)
+        z     = true
+        z.1   = verify(icu_sig.226, <'icu', icu.223, pk(x.437)>, ca_pub.221)
+        z.2   = true
+        z.3   = x.434^inv(x.435)
+    
+    34. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = ca_pub.221
+        dh_icu_pub
+              = x.434^(x.435*inv(~dh_kernel_priv.220))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = icu_reply_sig.225
+        icu_sig
+              = icu_sig.226
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.230>, x.437)
+        z     = true
+        z.1   = verify(icu_sig.226, <'icu', icu.223, pk(x.437)>, ca_pub.221)
+        z.2   = verify(icu_reply_sig.225,
+                       <'icu_reply', n_icu.228, x.434^(x.435*inv(~dh_kernel_priv.220)), 
+                        n_kernel.230>,
+                       pk(x.437))
+        z.3   = x.434^x.435
+    
+    35. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = ca_pub.221
+        dh_icu_pub
+              = x.434^(x.435*inv(~dh_kernel_priv.220))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.228, x.434^(x.435*inv(~dh_kernel_priv.220)), 
+                      n_kernel.230>,
+                     x.437)
+        icu_sig
+              = icu_sig.226
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = n_kernel_sig_i.231
+        z     = verify(n_kernel_sig_i.231, <'kernel_nonce', n_kernel.230>,
+                       pk(x.437))
+        z.1   = verify(icu_sig.226, <'icu', icu.223, pk(x.437)>, ca_pub.221)
+        z.2   = true
+        z.3   = x.434^x.435
+    
+    36. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = ca_pub.221
+        dh_icu_pub
+              = x.434^(x.435*inv(~dh_kernel_priv.220))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.228, x.434^(x.435*inv(~dh_kernel_priv.220)), 
+                      n_kernel.230>,
+                     x.437)
+        icu_sig
+              = icu_sig.226
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.230>, x.437)
+        z     = true
+        z.1   = verify(icu_sig.226, <'icu', icu.223, pk(x.437)>, ca_pub.221)
+        z.2   = true
+        z.3   = x.434^x.435
+    
+    37. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = pk(x.433)
+        dh_icu_pub
+              = x.434^inv((~dh_kernel_priv.220*x.435))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = icu_reply_sig.225
+        icu_sig
+              = sign(<'icu', icu.223, pk(x.437)>, x.433)
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.230>, x.437)
+        z     = true
+        z.1   = true
+        z.2   = verify(icu_reply_sig.225,
+                       <'icu_reply', n_icu.228, x.434^inv((~dh_kernel_priv.220*x.435)), 
+                        n_kernel.230>,
+                       pk(x.437))
+        z.3   = x.434^inv(x.435)
+    
+    38. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = pk(x.433)
+        dh_icu_pub
+              = x.434^inv((~dh_kernel_priv.220*x.435))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.228, x.434^inv((~dh_kernel_priv.220*x.435)), 
+                      n_kernel.230>,
+                     x.437)
+        icu_sig
+              = sign(<'icu', icu.223, pk(x.437)>, x.433)
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = n_kernel_sig_i.231
+        z     = verify(n_kernel_sig_i.231, <'kernel_nonce', n_kernel.230>,
+                       pk(x.437))
+        z.1   = true
+        z.2   = true
+        z.3   = x.434^inv(x.435)
+    
+    39. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = pk(x.433)
+        dh_icu_pub
+              = x.434^inv((~dh_kernel_priv.220*x.435))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.228, x.434^inv((~dh_kernel_priv.220*x.435)), 
+                      n_kernel.230>,
+                     x.437)
+        icu_sig
+              = sign(<'icu', icu.223, pk(x.437)>, x.433)
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.230>, x.437)
+        z     = true
+        z.1   = true
+        z.2   = true
+        z.3   = x.434^inv(x.435)
+    
+    40. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = pk(x.433)
+        dh_icu_pub
+              = x.434^(x.435*inv(~dh_kernel_priv.220))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = icu_reply_sig.225
+        icu_sig
+              = sign(<'icu', icu.223, pk(x.437)>, x.433)
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.230>, x.437)
+        z     = true
+        z.1   = true
+        z.2   = verify(icu_reply_sig.225,
+                       <'icu_reply', n_icu.228, x.434^(x.435*inv(~dh_kernel_priv.220)), 
+                        n_kernel.230>,
+                       pk(x.437))
+        z.3   = x.434^x.435
+    
+    41. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = pk(x.433)
+        dh_icu_pub
+              = x.434^(x.435*inv(~dh_kernel_priv.220))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.228, x.434^(x.435*inv(~dh_kernel_priv.220)), 
+                      n_kernel.230>,
+                     x.437)
+        icu_sig
+              = sign(<'icu', icu.223, pk(x.437)>, x.433)
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = n_kernel_sig_i.231
+        z     = verify(n_kernel_sig_i.231, <'kernel_nonce', n_kernel.230>,
+                       pk(x.437))
+        z.1   = true
+        z.2   = true
+        z.3   = x.434^x.435
+    
+    42. ~dh_kernel_priv
+              = ~dh_kernel_priv.220
+        ca_pub
+              = pk(x.433)
+        dh_icu_pub
+              = x.434^(x.435*inv(~dh_kernel_priv.220))
+        icu   = icu.223
+        icu_pub
+              = pk(x.437)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.228, x.434^(x.435*inv(~dh_kernel_priv.220)), 
+                      n_kernel.230>,
+                     x.437)
+        icu_sig
+              = sign(<'icu', icu.223, pk(x.437)>, x.433)
+        n_icu = n_icu.228
+        n_kernel
+              = n_kernel.230
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.230>, x.437)
+        z     = true
+        z.1   = true
+        z.2   = true
+        z.3   = x.434^x.435
+    
+    43. ~dh_kernel_priv
+              = ~dh_kernel_priv.221
+        ca_pub
+              = ca_pub.222
+        dh_icu_pub
+              = x.435^(x.436*inv((~dh_kernel_priv.221*x.437)))
+        icu   = icu.224
+        icu_pub
+              = pk(x.439)
+        icu_reply_sig
+              = icu_reply_sig.226
+        icu_sig
+              = icu_sig.227
+        n_icu = n_icu.229
+        n_kernel
+              = n_kernel.231
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.231>, x.439)
+        z     = true
+        z.1   = verify(icu_sig.227, <'icu', icu.224, pk(x.439)>, ca_pub.222)
+        z.2   = verify(icu_reply_sig.226,
+                       <'icu_reply', n_icu.229, x.435^(x.436*inv((~dh_kernel_priv.221*x.437))), 
+                        n_kernel.231>,
+                       pk(x.439))
+        z.3   = x.435^(x.436*inv(x.437))
+    
+    44. ~dh_kernel_priv
+              = ~dh_kernel_priv.221
+        ca_pub
+              = ca_pub.222
+        dh_icu_pub
+              = x.435^(x.436*inv((~dh_kernel_priv.221*x.437)))
+        icu   = icu.224
+        icu_pub
+              = pk(x.439)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.229, 
+                      x.435^(x.436*inv((~dh_kernel_priv.221*x.437))), n_kernel.231>,
+                     x.439)
+        icu_sig
+              = icu_sig.227
+        n_icu = n_icu.229
+        n_kernel
+              = n_kernel.231
+        n_kernel_sig_i
+              = n_kernel_sig_i.232
+        z     = verify(n_kernel_sig_i.232, <'kernel_nonce', n_kernel.231>,
+                       pk(x.439))
+        z.1   = verify(icu_sig.227, <'icu', icu.224, pk(x.439)>, ca_pub.222)
+        z.2   = true
+        z.3   = x.435^(x.436*inv(x.437))
+    
+    45. ~dh_kernel_priv
+              = ~dh_kernel_priv.221
+        ca_pub
+              = ca_pub.222
+        dh_icu_pub
+              = x.435^(x.436*inv((~dh_kernel_priv.221*x.437)))
+        icu   = icu.224
+        icu_pub
+              = pk(x.439)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.229, 
+                      x.435^(x.436*inv((~dh_kernel_priv.221*x.437))), n_kernel.231>,
+                     x.439)
+        icu_sig
+              = icu_sig.227
+        n_icu = n_icu.229
+        n_kernel
+              = n_kernel.231
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.231>, x.439)
+        z     = true
+        z.1   = verify(icu_sig.227, <'icu', icu.224, pk(x.439)>, ca_pub.222)
+        z.2   = true
+        z.3   = x.435^(x.436*inv(x.437))
+    
+    46. ~dh_kernel_priv
+              = ~dh_kernel_priv.221
+        ca_pub
+              = pk(x.434)
+        dh_icu_pub
+              = x.435^(x.436*inv((~dh_kernel_priv.221*x.437)))
+        icu   = icu.224
+        icu_pub
+              = pk(x.439)
+        icu_reply_sig
+              = icu_reply_sig.226
+        icu_sig
+              = sign(<'icu', icu.224, pk(x.439)>, x.434)
+        n_icu = n_icu.229
+        n_kernel
+              = n_kernel.231
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.231>, x.439)
+        z     = true
+        z.1   = true
+        z.2   = verify(icu_reply_sig.226,
+                       <'icu_reply', n_icu.229, x.435^(x.436*inv((~dh_kernel_priv.221*x.437))), 
+                        n_kernel.231>,
+                       pk(x.439))
+        z.3   = x.435^(x.436*inv(x.437))
+    
+    47. ~dh_kernel_priv
+              = ~dh_kernel_priv.221
+        ca_pub
+              = pk(x.434)
+        dh_icu_pub
+              = x.435^(x.436*inv((~dh_kernel_priv.221*x.437)))
+        icu   = icu.224
+        icu_pub
+              = pk(x.439)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.229, 
+                      x.435^(x.436*inv((~dh_kernel_priv.221*x.437))), n_kernel.231>,
+                     x.439)
+        icu_sig
+              = sign(<'icu', icu.224, pk(x.439)>, x.434)
+        n_icu = n_icu.229
+        n_kernel
+              = n_kernel.231
+        n_kernel_sig_i
+              = n_kernel_sig_i.232
+        z     = verify(n_kernel_sig_i.232, <'kernel_nonce', n_kernel.231>,
+                       pk(x.439))
+        z.1   = true
+        z.2   = true
+        z.3   = x.435^(x.436*inv(x.437))
+    
+    48. ~dh_kernel_priv
+              = ~dh_kernel_priv.221
+        ca_pub
+              = pk(x.434)
+        dh_icu_pub
+              = x.435^(x.436*inv((~dh_kernel_priv.221*x.437)))
+        icu   = icu.224
+        icu_pub
+              = pk(x.439)
+        icu_reply_sig
+              = sign(<'icu_reply', n_icu.229, 
+                      x.435^(x.436*inv((~dh_kernel_priv.221*x.437))), n_kernel.231>,
+                     x.439)
+        icu_sig
+              = sign(<'icu', icu.224, pk(x.439)>, x.434)
+        n_icu = n_icu.229
+        n_kernel
+              = n_kernel.231
+        n_kernel_sig_i
+              = sign(<'kernel_nonce', n_kernel.231>, x.439)
+        z     = true
+        z.1   = true
+        z.2   = true
+        z.3   = x.435^(x.436*inv(x.437))
+  */
+
+rule (modulo E) icu_to_kernel_2:
+   [
+   Icu_memory_1( $ICU, dh_icu_priv,
+                 <'cert', kernel, kernel_pub, kernel_sig>, n_icu
+   ),
+   In( <'3', n_icu_sig_k, dh_kernel_pub, kernel_reply_sig> )
+   ]
+  --[
+  Eq( verify(n_icu_sig_k, <'icu_nonce', n_icu>, kernel_pub), true ),
+  Eq( verify(kernel_reply_sig, <'kernel_reply', dh_kernel_pub, n_icu>,
+             kernel_pub),
+      true
+  ),
+  NotEq( $ICU, kernel ),
+  ICUDone( $ICU, kernel, dh_kernel_pub^dh_icu_priv ), ProtocolStep( '4' ),
+  BehaveICU( $ICU )
+  ]->
+   [ ]
+
+  /*
+  rule (modulo AC) icu_to_kernel_2:
+     [
+     Icu_memory_1( $ICU, dh_icu_priv,
+                   <'cert', kernel, kernel_pub, kernel_sig>, n_icu
+     ),
+     In( <'3', n_icu_sig_k, dh_kernel_pub, kernel_reply_sig> )
+     ]
+    --[
+    Eq( z, true ), Eq( z.1, true ), NotEq( $ICU, kernel ),
+    ICUDone( $ICU, kernel, z.2 ), ProtocolStep( '4' ), BehaveICU( $ICU )
+    ]->
+     [ ]
+    variants (modulo AC)
+      1. dh_icu_priv
+               = dh_icu_priv.23
+         dh_kernel_pub
+               = dh_kernel_pub.24
+         kernel_pub
+               = kernel_pub.26
+         kernel_reply_sig
+               = kernel_reply_sig.27
+         n_icu = n_icu.29
+         n_icu_sig_k
+               = n_icu_sig_k.30
+         z     = verify(n_icu_sig_k.30, <'icu_nonce', n_icu.29>, kernel_pub.26)
+         z.1   = verify(kernel_reply_sig.27,
+                        <'kernel_reply', dh_kernel_pub.24, n_icu.29>, kernel_pub.26)
+         z.2   = dh_kernel_pub.24^dh_icu_priv.23
+    
+      2. dh_icu_priv
+               = dh_icu_priv.28
+         dh_kernel_pub
+               = z.40^inv(dh_icu_priv.28)
+         kernel_pub
+               = kernel_pub.31
+         kernel_reply_sig
+               = kernel_reply_sig.32
+         n_icu = n_icu.34
+         n_icu_sig_k
+               = n_icu_sig_k.35
+         z     = verify(n_icu_sig_k.35, <'icu_nonce', n_icu.34>, kernel_pub.31)
+         z.1   = verify(kernel_reply_sig.32,
+                        <'kernel_reply', z.40^inv(dh_icu_priv.28), n_icu.34>, kernel_pub.31)
+         z.2   = z.40
+    
+      3. dh_icu_priv
+               = dh_icu_priv.44
+         dh_kernel_pub
+               = dh_kernel_pub.45
+         kernel_pub
+               = pk(x.85)
+         kernel_reply_sig
+               = kernel_reply_sig.48
+         n_icu = n_icu.50
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.50>, x.85)
+         z     = true
+         z.1   = verify(kernel_reply_sig.48,
+                        <'kernel_reply', dh_kernel_pub.45, n_icu.50>, pk(x.85))
+         z.2   = dh_kernel_pub.45^dh_icu_priv.44
+    
+      4. dh_icu_priv
+               = dh_icu_priv.45
+         dh_kernel_pub
+               = x.86^x.87
+         kernel_pub
+               = kernel_pub.48
+         kernel_reply_sig
+               = kernel_reply_sig.49
+         n_icu = n_icu.51
+         n_icu_sig_k
+               = n_icu_sig_k.52
+         z     = verify(n_icu_sig_k.52, <'icu_nonce', n_icu.51>, kernel_pub.48)
+         z.1   = verify(kernel_reply_sig.49,
+                        <'kernel_reply', x.86^x.87, n_icu.51>, kernel_pub.48)
+         z.2   = x.86^(dh_icu_priv.45*x.87)
+    
+      5. dh_icu_priv
+               = dh_icu_priv.46
+         dh_kernel_pub
+               = dh_kernel_pub.47
+         kernel_pub
+               = pk(x.89)
+         kernel_reply_sig
+               = sign(<'kernel_reply', dh_kernel_pub.47, n_icu.52>, x.89)
+         n_icu = n_icu.52
+         n_icu_sig_k
+               = n_icu_sig_k.53
+         z     = verify(n_icu_sig_k.53, <'icu_nonce', n_icu.52>, pk(x.89))
+         z.1   = true
+         z.2   = dh_kernel_pub.47^dh_icu_priv.46
+    
+      6. dh_icu_priv
+               = dh_icu_priv.46
+         dh_kernel_pub
+               = dh_kernel_pub.47
+         kernel_pub
+               = pk(x.89)
+         kernel_reply_sig
+               = sign(<'kernel_reply', dh_kernel_pub.47, n_icu.52>, x.89)
+         n_icu = n_icu.52
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.52>, x.89)
+         z     = true
+         z.1   = true
+         z.2   = dh_kernel_pub.47^dh_icu_priv.46
+    
+      7. dh_icu_priv
+               = dh_icu_priv.46
+         dh_kernel_pub
+               = x.88^inv((dh_icu_priv.46*x.89))
+         kernel_pub
+               = kernel_pub.49
+         kernel_reply_sig
+               = kernel_reply_sig.50
+         n_icu = n_icu.52
+         n_icu_sig_k
+               = n_icu_sig_k.53
+         z     = verify(n_icu_sig_k.53, <'icu_nonce', n_icu.52>, kernel_pub.49)
+         z.1   = verify(kernel_reply_sig.50,
+                        <'kernel_reply', x.88^inv((dh_icu_priv.46*x.89)), n_icu.52>,
+                        kernel_pub.49)
+         z.2   = x.88^inv(x.89)
+    
+      8. dh_icu_priv
+               = dh_icu_priv.46
+         dh_kernel_pub
+               = x.88^(x.89*inv(dh_icu_priv.46))
+         kernel_pub
+               = kernel_pub.49
+         kernel_reply_sig
+               = kernel_reply_sig.50
+         n_icu = n_icu.52
+         n_icu_sig_k
+               = n_icu_sig_k.53
+         z     = verify(n_icu_sig_k.53, <'icu_nonce', n_icu.52>, kernel_pub.49)
+         z.1   = verify(kernel_reply_sig.50,
+                        <'kernel_reply', x.88^(x.89*inv(dh_icu_priv.46)), n_icu.52>,
+                        kernel_pub.49)
+         z.2   = x.88^x.89
+    
+      9. dh_icu_priv
+               = dh_icu_priv.47
+         dh_kernel_pub
+               = z.59^inv(dh_icu_priv.47)
+         kernel_pub
+               = pk(x.91)
+         kernel_reply_sig
+               = kernel_reply_sig.51
+         n_icu = n_icu.53
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.53>, x.91)
+         z     = true
+         z.1   = verify(kernel_reply_sig.51,
+                        <'kernel_reply', z.59^inv(dh_icu_priv.47), n_icu.53>, pk(x.91))
+         z.2   = z.59
+    
+     10. dh_icu_priv
+               = dh_icu_priv.47
+         dh_kernel_pub
+               = z.59^inv(dh_icu_priv.47)
+         kernel_pub
+               = pk(x.91)
+         kernel_reply_sig
+               = sign(<'kernel_reply', z.59^inv(dh_icu_priv.47), n_icu.53>, x.91)
+         n_icu = n_icu.53
+         n_icu_sig_k
+               = n_icu_sig_k.54
+         z     = verify(n_icu_sig_k.54, <'icu_nonce', n_icu.53>, pk(x.91))
+         z.1   = true
+         z.2   = z.59
+    
+     11. dh_icu_priv
+               = dh_icu_priv.47
+         dh_kernel_pub
+               = z.59^inv(dh_icu_priv.47)
+         kernel_pub
+               = pk(x.91)
+         kernel_reply_sig
+               = sign(<'kernel_reply', z.59^inv(dh_icu_priv.47), n_icu.53>, x.91)
+         n_icu = n_icu.53
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.53>, x.91)
+         z     = true
+         z.1   = true
+         z.2   = z.59
+    
+     12. dh_icu_priv
+               = dh_icu_priv.47
+         dh_kernel_pub
+               = x.88^x.89
+         kernel_pub
+               = pk(x.91)
+         kernel_reply_sig
+               = kernel_reply_sig.51
+         n_icu = n_icu.53
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.53>, x.91)
+         z     = true
+         z.1   = verify(kernel_reply_sig.51,
+                        <'kernel_reply', x.88^x.89, n_icu.53>, pk(x.91))
+         z.2   = x.88^(dh_icu_priv.47*x.89)
+    
+     13. dh_icu_priv
+               = dh_icu_priv.47
+         dh_kernel_pub
+               = x.88^x.89
+         kernel_pub
+               = pk(x.91)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.88^x.89, n_icu.53>, x.91)
+         n_icu = n_icu.53
+         n_icu_sig_k
+               = n_icu_sig_k.54
+         z     = verify(n_icu_sig_k.54, <'icu_nonce', n_icu.53>, pk(x.91))
+         z.1   = true
+         z.2   = x.88^(dh_icu_priv.47*x.89)
+    
+     14. dh_icu_priv
+               = dh_icu_priv.47
+         dh_kernel_pub
+               = x.88^x.89
+         kernel_pub
+               = pk(x.91)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.88^x.89, n_icu.53>, x.91)
+         n_icu = n_icu.53
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.53>, x.91)
+         z     = true
+         z.1   = true
+         z.2   = x.88^(dh_icu_priv.47*x.89)
+    
+     15. dh_icu_priv
+               = dh_icu_priv.47
+         dh_kernel_pub
+               = x.89^(x.90*inv((dh_icu_priv.47*x.91)))
+         kernel_pub
+               = kernel_pub.50
+         kernel_reply_sig
+               = kernel_reply_sig.51
+         n_icu = n_icu.53
+         n_icu_sig_k
+               = n_icu_sig_k.54
+         z     = verify(n_icu_sig_k.54, <'icu_nonce', n_icu.53>, kernel_pub.50)
+         z.1   = verify(kernel_reply_sig.51,
+                        <'kernel_reply', x.89^(x.90*inv((dh_icu_priv.47*x.91))), n_icu.53>,
+                        kernel_pub.50)
+         z.2   = x.89^(x.90*inv(x.91))
+    
+     16. dh_icu_priv
+               = dh_icu_priv.48
+         dh_kernel_pub
+               = x.90^inv((dh_icu_priv.48*x.91))
+         kernel_pub
+               = pk(x.93)
+         kernel_reply_sig
+               = kernel_reply_sig.52
+         n_icu = n_icu.54
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.54>, x.93)
+         z     = true
+         z.1   = verify(kernel_reply_sig.52,
+                        <'kernel_reply', x.90^inv((dh_icu_priv.48*x.91)), n_icu.54>, pk(x.93))
+         z.2   = x.90^inv(x.91)
+    
+     17. dh_icu_priv
+               = dh_icu_priv.48
+         dh_kernel_pub
+               = x.90^inv((dh_icu_priv.48*x.91))
+         kernel_pub
+               = pk(x.93)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.90^inv((dh_icu_priv.48*x.91)), n_icu.54>, x.93)
+         n_icu = n_icu.54
+         n_icu_sig_k
+               = n_icu_sig_k.55
+         z     = verify(n_icu_sig_k.55, <'icu_nonce', n_icu.54>, pk(x.93))
+         z.1   = true
+         z.2   = x.90^inv(x.91)
+    
+     18. dh_icu_priv
+               = dh_icu_priv.48
+         dh_kernel_pub
+               = x.90^inv((dh_icu_priv.48*x.91))
+         kernel_pub
+               = pk(x.93)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.90^inv((dh_icu_priv.48*x.91)), n_icu.54>, x.93)
+         n_icu = n_icu.54
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.54>, x.93)
+         z     = true
+         z.1   = true
+         z.2   = x.90^inv(x.91)
+    
+     19. dh_icu_priv
+               = dh_icu_priv.48
+         dh_kernel_pub
+               = x.90^(x.91*inv(dh_icu_priv.48))
+         kernel_pub
+               = pk(x.93)
+         kernel_reply_sig
+               = kernel_reply_sig.52
+         n_icu = n_icu.54
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.54>, x.93)
+         z     = true
+         z.1   = verify(kernel_reply_sig.52,
+                        <'kernel_reply', x.90^(x.91*inv(dh_icu_priv.48)), n_icu.54>, pk(x.93))
+         z.2   = x.90^x.91
+    
+     20. dh_icu_priv
+               = dh_icu_priv.48
+         dh_kernel_pub
+               = x.90^(x.91*inv(dh_icu_priv.48))
+         kernel_pub
+               = pk(x.93)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.90^(x.91*inv(dh_icu_priv.48)), n_icu.54>, x.93)
+         n_icu = n_icu.54
+         n_icu_sig_k
+               = n_icu_sig_k.55
+         z     = verify(n_icu_sig_k.55, <'icu_nonce', n_icu.54>, pk(x.93))
+         z.1   = true
+         z.2   = x.90^x.91
+    
+     21. dh_icu_priv
+               = dh_icu_priv.48
+         dh_kernel_pub
+               = x.90^(x.91*inv(dh_icu_priv.48))
+         kernel_pub
+               = pk(x.93)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.90^(x.91*inv(dh_icu_priv.48)), n_icu.54>, x.93)
+         n_icu = n_icu.54
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.54>, x.93)
+         z     = true
+         z.1   = true
+         z.2   = x.90^x.91
+    
+     22. dh_icu_priv
+               = dh_icu_priv.49
+         dh_kernel_pub
+               = x.91^(x.92*inv((dh_icu_priv.49*x.93)))
+         kernel_pub
+               = pk(x.95)
+         kernel_reply_sig
+               = kernel_reply_sig.53
+         n_icu = n_icu.55
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.55>, x.95)
+         z     = true
+         z.1   = verify(kernel_reply_sig.53,
+                        <'kernel_reply', x.91^(x.92*inv((dh_icu_priv.49*x.93))), n_icu.55>,
+                        pk(x.95))
+         z.2   = x.91^(x.92*inv(x.93))
+    
+     23. dh_icu_priv
+               = dh_icu_priv.49
+         dh_kernel_pub
+               = x.91^(x.92*inv((dh_icu_priv.49*x.93)))
+         kernel_pub
+               = pk(x.95)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.91^(x.92*inv((dh_icu_priv.49*x.93))), n_icu.55
+                      >,
+                      x.95)
+         n_icu = n_icu.55
+         n_icu_sig_k
+               = n_icu_sig_k.56
+         z     = verify(n_icu_sig_k.56, <'icu_nonce', n_icu.55>, pk(x.95))
+         z.1   = true
+         z.2   = x.91^(x.92*inv(x.93))
+    
+     24. dh_icu_priv
+               = dh_icu_priv.49
+         dh_kernel_pub
+               = x.91^(x.92*inv((dh_icu_priv.49*x.93)))
+         kernel_pub
+               = pk(x.95)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.91^(x.92*inv((dh_icu_priv.49*x.93))), n_icu.55
+                      >,
+                      x.95)
+         n_icu = n_icu.55
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.55>, x.95)
+         z     = true
+         z.1   = true
+         z.2   = x.91^(x.92*inv(x.93))
+    
+     25. dh_icu_priv
+               = inv(x.58)
+         dh_kernel_pub
+               = z.41^x.58
+         kernel_pub
+               = pk(x.61)
+         kernel_reply_sig
+               = sign(<'kernel_reply', z.41^x.58, n_icu.35>, x.61)
+         n_icu = n_icu.35
+         n_icu_sig_k
+               = n_icu_sig_k.36
+         z     = verify(n_icu_sig_k.36, <'icu_nonce', n_icu.35>, pk(x.61))
+         z.1   = true
+         z.2   = z.41
+    
+     26. dh_icu_priv
+               = inv(x.58)
+         dh_kernel_pub
+               = z.41^x.58
+         kernel_pub
+               = pk(x.61)
+         kernel_reply_sig
+               = sign(<'kernel_reply', z.41^x.58, n_icu.35>, x.61)
+         n_icu = n_icu.35
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.35>, x.61)
+         z     = true
+         z.1   = true
+         z.2   = z.41
+    
+     27. dh_icu_priv
+               = inv(x.59)
+         dh_kernel_pub
+               = x.60^inv(x.61)
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.60^inv(x.61), n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = n_icu_sig_k.37
+         z     = verify(n_icu_sig_k.37, <'icu_nonce', n_icu.36>, pk(x.63))
+         z.1   = true
+         z.2   = x.60^inv((x.59*x.61))
+    
+     28. dh_icu_priv
+               = inv(x.59)
+         dh_kernel_pub
+               = x.60^inv(x.61)
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.60^inv(x.61), n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.36>, x.63)
+         z     = true
+         z.1   = true
+         z.2   = x.60^inv((x.59*x.61))
+    
+     29. dh_icu_priv
+               = inv(x.59)
+         dh_kernel_pub
+               = x.60^(x.59*x.61)
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.60^(x.59*x.61), n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = n_icu_sig_k.37
+         z     = verify(n_icu_sig_k.37, <'icu_nonce', n_icu.36>, pk(x.63))
+         z.1   = true
+         z.2   = x.60^x.61
+    
+     30. dh_icu_priv
+               = inv(x.59)
+         dh_kernel_pub
+               = x.60^(x.59*x.61)
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.60^(x.59*x.61), n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.36>, x.63)
+         z     = true
+         z.1   = true
+         z.2   = x.60^x.61
+    
+     31. dh_icu_priv
+               = inv(x.60)
+         dh_kernel_pub
+               = x.61^(x.62*inv(x.63))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.61^(x.62*inv(x.63)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.61^(x.62*inv((x.60*x.63)))
+    
+     32. dh_icu_priv
+               = inv(x.60)
+         dh_kernel_pub
+               = x.61^(x.62*inv(x.63))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.61^(x.62*inv(x.63)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.61^(x.62*inv((x.60*x.63)))
+    
+     33. dh_icu_priv
+               = inv(x.68)
+         dh_kernel_pub
+               = z.47^x.68
+         kernel_pub
+               = pk(x.71)
+         kernel_reply_sig
+               = kernel_reply_sig.39
+         n_icu = n_icu.41
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.41>, x.71)
+         z     = true
+         z.1   = verify(kernel_reply_sig.39,
+                        <'kernel_reply', z.47^x.68, n_icu.41>, pk(x.71))
+         z.2   = z.47
+    
+     34. dh_icu_priv
+               = inv(x.69)
+         dh_kernel_pub
+               = x.70^inv(x.71)
+         kernel_pub
+               = pk(x.73)
+         kernel_reply_sig
+               = kernel_reply_sig.40
+         n_icu = n_icu.42
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.42>, x.73)
+         z     = true
+         z.1   = verify(kernel_reply_sig.40,
+                        <'kernel_reply', x.70^inv(x.71), n_icu.42>, pk(x.73))
+         z.2   = x.70^inv((x.69*x.71))
+    
+     35. dh_icu_priv
+               = inv(x.69)
+         dh_kernel_pub
+               = x.70^(x.69*x.71)
+         kernel_pub
+               = pk(x.73)
+         kernel_reply_sig
+               = kernel_reply_sig.40
+         n_icu = n_icu.42
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.42>, x.73)
+         z     = true
+         z.1   = verify(kernel_reply_sig.40,
+                        <'kernel_reply', x.70^(x.69*x.71), n_icu.42>, pk(x.73))
+         z.2   = x.70^x.71
+    
+     36. dh_icu_priv
+               = inv(x.70)
+         dh_kernel_pub
+               = z.47^x.70
+         kernel_pub
+               = kernel_pub.38
+         kernel_reply_sig
+               = kernel_reply_sig.39
+         n_icu = n_icu.41
+         n_icu_sig_k
+               = n_icu_sig_k.42
+         z     = verify(n_icu_sig_k.42, <'icu_nonce', n_icu.41>, kernel_pub.38)
+         z.1   = verify(kernel_reply_sig.39,
+                        <'kernel_reply', z.47^x.70, n_icu.41>, kernel_pub.38)
+         z.2   = z.47
+    
+     37. dh_icu_priv
+               = inv(x.70)
+         dh_kernel_pub
+               = x.71^(x.72*inv(x.73))
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.71^(x.72*inv(x.73)), n_icu.43>, pk(x.75))
+         z.2   = x.71^(x.72*inv((x.70*x.73)))
+    
+     38. dh_icu_priv
+               = inv(x.72)
+         dh_kernel_pub
+               = x.73^inv(x.74)
+         kernel_pub
+               = kernel_pub.40
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = n_icu_sig_k.44
+         z     = verify(n_icu_sig_k.44, <'icu_nonce', n_icu.43>, kernel_pub.40)
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.73^inv(x.74), n_icu.43>, kernel_pub.40)
+         z.2   = x.73^inv((x.72*x.74))
+    
+     39. dh_icu_priv
+               = inv(x.72)
+         dh_kernel_pub
+               = x.73^(x.72*x.74)
+         kernel_pub
+               = kernel_pub.40
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = n_icu_sig_k.44
+         z     = verify(n_icu_sig_k.44, <'icu_nonce', n_icu.43>, kernel_pub.40)
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.73^(x.72*x.74), n_icu.43>, kernel_pub.40)
+         z.2   = x.73^x.74
+    
+     40. dh_icu_priv
+               = inv(x.73)
+         dh_kernel_pub
+               = x.74^(x.75*inv(x.76))
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.74^(x.75*inv(x.76)), n_icu.44>, kernel_pub.41)
+         z.2   = x.74^(x.75*inv((x.73*x.76)))
+    
+     41. dh_icu_priv
+               = inv((x.59*x.60))
+         dh_kernel_pub
+               = x.61^x.60
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.61^x.60, n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = n_icu_sig_k.37
+         z     = verify(n_icu_sig_k.37, <'icu_nonce', n_icu.36>, pk(x.63))
+         z.1   = true
+         z.2   = x.61^inv(x.59)
+    
+     42. dh_icu_priv
+               = inv((x.59*x.60))
+         dh_kernel_pub
+               = x.61^x.60
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.61^x.60, n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.36>, x.63)
+         z     = true
+         z.1   = true
+         z.2   = x.61^inv(x.59)
+    
+     43. dh_icu_priv
+               = inv((x.60*x.61))
+         dh_kernel_pub
+               = x.62^(x.60*x.63)
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.60*x.63), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.62^(x.63*inv(x.61))
+    
+     44. dh_icu_priv
+               = inv((x.60*x.61))
+         dh_kernel_pub
+               = x.62^(x.60*x.63)
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.60*x.63), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.62^(x.63*inv(x.61))
+    
+     45. dh_icu_priv
+               = inv((x.60*x.61))
+         dh_kernel_pub
+               = x.62^(x.60*inv(x.63))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.60*inv(x.63)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.62^inv((x.61*x.63))
+    
+     46. dh_icu_priv
+               = inv((x.60*x.61))
+         dh_kernel_pub
+               = x.62^(x.60*inv(x.63))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.60*inv(x.63)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.62^inv((x.61*x.63))
+    
+     47. dh_icu_priv
+               = inv((x.61*x.62))
+         dh_kernel_pub
+               = x.63^(x.61*x.64*inv(x.65))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.61*x.64*inv(x.65)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.63^(x.64*inv((x.62*x.65)))
+    
+     48. dh_icu_priv
+               = inv((x.61*x.62))
+         dh_kernel_pub
+               = x.63^(x.61*x.64*inv(x.65))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.61*x.64*inv(x.65)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.63^(x.64*inv((x.62*x.65)))
+    
+     49. dh_icu_priv
+               = inv((x.69*x.70))
+         dh_kernel_pub
+               = x.71^x.70
+         kernel_pub
+               = pk(x.73)
+         kernel_reply_sig
+               = kernel_reply_sig.40
+         n_icu = n_icu.42
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.42>, x.73)
+         z     = true
+         z.1   = verify(kernel_reply_sig.40,
+                        <'kernel_reply', x.71^x.70, n_icu.42>, pk(x.73))
+         z.2   = x.71^inv(x.69)
+    
+     50. dh_icu_priv
+               = inv((x.70*x.71))
+         dh_kernel_pub
+               = x.72^(x.70*x.73)
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.72^(x.70*x.73), n_icu.43>, pk(x.75))
+         z.2   = x.72^(x.73*inv(x.71))
+    
+     51. dh_icu_priv
+               = inv((x.70*x.71))
+         dh_kernel_pub
+               = x.72^(x.70*inv(x.73))
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.72^(x.70*inv(x.73)), n_icu.43>, pk(x.75))
+         z.2   = x.72^inv((x.71*x.73))
+    
+     52. dh_icu_priv
+               = inv((x.71*x.72))
+         dh_kernel_pub
+               = x.73^(x.71*x.74*inv(x.75))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.73^(x.71*x.74*inv(x.75)), n_icu.44>, pk(x.77))
+         z.2   = x.73^(x.74*inv((x.72*x.75)))
+    
+     53. dh_icu_priv
+               = inv((x.72*x.73))
+         dh_kernel_pub
+               = x.74^x.73
+         kernel_pub
+               = kernel_pub.40
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = n_icu_sig_k.44
+         z     = verify(n_icu_sig_k.44, <'icu_nonce', n_icu.43>, kernel_pub.40)
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.74^x.73, n_icu.43>, kernel_pub.40)
+         z.2   = x.74^inv(x.72)
+    
+     54. dh_icu_priv
+               = inv((x.73*x.74))
+         dh_kernel_pub
+               = x.75^(x.73*x.76)
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.75^(x.73*x.76), n_icu.44>, kernel_pub.41)
+         z.2   = x.75^(x.76*inv(x.74))
+    
+     55. dh_icu_priv
+               = inv((x.73*x.74))
+         dh_kernel_pub
+               = x.75^(x.73*inv(x.76))
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.75^(x.73*inv(x.76)), n_icu.44>, kernel_pub.41)
+         z.2   = x.75^inv((x.74*x.76))
+    
+     56. dh_icu_priv
+               = inv((x.74*x.75))
+         dh_kernel_pub
+               = x.76^(x.74*x.77*inv(x.78))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.76^(x.74*x.77*inv(x.78)), n_icu.45>, kernel_pub.42)
+         z.2   = x.76^(x.77*inv((x.75*x.78)))
+    
+     57. dh_icu_priv
+               = one
+         dh_kernel_pub
+               = dh_kernel_pub.22
+         kernel_pub
+               = kernel_pub.24
+         kernel_reply_sig
+               = kernel_reply_sig.25
+         n_icu = n_icu.27
+         n_icu_sig_k
+               = n_icu_sig_k.28
+         z     = verify(n_icu_sig_k.28, <'icu_nonce', n_icu.27>, kernel_pub.24)
+         z.1   = verify(kernel_reply_sig.25,
+                        <'kernel_reply', dh_kernel_pub.22, n_icu.27>, kernel_pub.24)
+         z.2   = dh_kernel_pub.22
+    
+     58. dh_icu_priv
+               = one
+         dh_kernel_pub
+               = dh_kernel_pub.42
+         kernel_pub
+               = pk(x.80)
+         kernel_reply_sig
+               = kernel_reply_sig.45
+         n_icu = n_icu.47
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.47>, x.80)
+         z     = true
+         z.1   = verify(kernel_reply_sig.45,
+                        <'kernel_reply', dh_kernel_pub.42, n_icu.47>, pk(x.80))
+         z.2   = dh_kernel_pub.42
+    
+     59. dh_icu_priv
+               = one
+         dh_kernel_pub
+               = dh_kernel_pub.44
+         kernel_pub
+               = pk(x.84)
+         kernel_reply_sig
+               = sign(<'kernel_reply', dh_kernel_pub.44, n_icu.49>, x.84)
+         n_icu = n_icu.49
+         n_icu_sig_k
+               = n_icu_sig_k.50
+         z     = verify(n_icu_sig_k.50, <'icu_nonce', n_icu.49>, pk(x.84))
+         z.1   = true
+         z.2   = dh_kernel_pub.44
+    
+     60. dh_icu_priv
+               = one
+         dh_kernel_pub
+               = dh_kernel_pub.44
+         kernel_pub
+               = pk(x.84)
+         kernel_reply_sig
+               = sign(<'kernel_reply', dh_kernel_pub.44, n_icu.49>, x.84)
+         n_icu = n_icu.49
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.49>, x.84)
+         z     = true
+         z.1   = true
+         z.2   = dh_kernel_pub.44
+    
+     61. dh_icu_priv
+               = (x.59*x.60)
+         dh_kernel_pub
+               = x.61^inv(x.59)
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.61^inv(x.59), n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = n_icu_sig_k.37
+         z     = verify(n_icu_sig_k.37, <'icu_nonce', n_icu.36>, pk(x.63))
+         z.1   = true
+         z.2   = x.61^x.60
+    
+     62. dh_icu_priv
+               = (x.59*x.60)
+         dh_kernel_pub
+               = x.61^inv(x.59)
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.61^inv(x.59), n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.36>, x.63)
+         z     = true
+         z.1   = true
+         z.2   = x.61^x.60
+    
+     63. dh_icu_priv
+               = (x.59*inv(x.60))
+         dh_kernel_pub
+               = z.42^(x.60*inv(x.59))
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', z.42^(x.60*inv(x.59)), n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = n_icu_sig_k.37
+         z     = verify(n_icu_sig_k.37, <'icu_nonce', n_icu.36>, pk(x.63))
+         z.1   = true
+         z.2   = z.42
+    
+     64. dh_icu_priv
+               = (x.59*inv(x.60))
+         dh_kernel_pub
+               = z.42^(x.60*inv(x.59))
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', z.42^(x.60*inv(x.59)), n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.36>, x.63)
+         z     = true
+         z.1   = true
+         z.2   = z.42
+    
+     65. dh_icu_priv
+               = (x.59*inv(x.60))
+         dh_kernel_pub
+               = x.61^x.60
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.61^x.60, n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = n_icu_sig_k.37
+         z     = verify(n_icu_sig_k.37, <'icu_nonce', n_icu.36>, pk(x.63))
+         z.1   = true
+         z.2   = x.61^x.59
+    
+     66. dh_icu_priv
+               = (x.59*inv(x.60))
+         dh_kernel_pub
+               = x.61^x.60
+         kernel_pub
+               = pk(x.63)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.61^x.60, n_icu.36>, x.63)
+         n_icu = n_icu.36
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.36>, x.63)
+         z     = true
+         z.1   = true
+         z.2   = x.61^x.59
+    
+     67. dh_icu_priv
+               = (x.60*x.61)
+         dh_kernel_pub
+               = x.62^inv((x.60*x.63))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^inv((x.60*x.63)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.62^(x.61*inv(x.63))
+    
+     68. dh_icu_priv
+               = (x.60*x.61)
+         dh_kernel_pub
+               = x.62^inv((x.60*x.63))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^inv((x.60*x.63)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.62^(x.61*inv(x.63))
+    
+     69. dh_icu_priv
+               = (x.60*x.61)
+         dh_kernel_pub
+               = x.62^(x.63*inv(x.60))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.63*inv(x.60)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.62^(x.61*x.63)
+    
+     70. dh_icu_priv
+               = (x.60*x.61)
+         dh_kernel_pub
+               = x.62^(x.63*inv(x.60))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.63*inv(x.60)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.62^(x.61*x.63)
+    
+     71. dh_icu_priv
+               = (x.60*x.61*inv(x.62))
+         dh_kernel_pub
+               = x.63^(x.62*inv(x.60))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.62*inv(x.60)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.63^x.61
+    
+     72. dh_icu_priv
+               = (x.60*x.61*inv(x.62))
+         dh_kernel_pub
+               = x.63^(x.62*inv(x.60))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.62*inv(x.60)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.63^x.61
+    
+     73. dh_icu_priv
+               = (x.60*inv(x.61))
+         dh_kernel_pub
+               = x.62^inv(x.63)
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^inv(x.63), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.62^(x.60*inv((x.61*x.63)))
+    
+     74. dh_icu_priv
+               = (x.60*inv(x.61))
+         dh_kernel_pub
+               = x.62^inv(x.63)
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^inv(x.63), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.62^(x.60*inv((x.61*x.63)))
+    
+     75. dh_icu_priv
+               = (x.60*inv(x.61))
+         dh_kernel_pub
+               = x.62^inv((x.60*x.63))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^inv((x.60*x.63)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.62^inv((x.61*x.63))
+    
+     76. dh_icu_priv
+               = (x.60*inv(x.61))
+         dh_kernel_pub
+               = x.62^inv((x.60*x.63))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^inv((x.60*x.63)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.62^inv((x.61*x.63))
+    
+     77. dh_icu_priv
+               = (x.60*inv(x.61))
+         dh_kernel_pub
+               = x.62^(x.61*x.63)
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.61*x.63), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.62^(x.60*x.63)
+    
+     78. dh_icu_priv
+               = (x.60*inv(x.61))
+         dh_kernel_pub
+               = x.62^(x.61*x.63)
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.61*x.63), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.62^(x.60*x.63)
+    
+     79. dh_icu_priv
+               = (x.60*inv(x.61))
+         dh_kernel_pub
+               = x.62^(x.61*x.63*inv(x.60))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.61*x.63*inv(x.60)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.62^x.63
+    
+     80. dh_icu_priv
+               = (x.60*inv(x.61))
+         dh_kernel_pub
+               = x.62^(x.61*x.63*inv(x.60))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.61*x.63*inv(x.60)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.62^x.63
+    
+     81. dh_icu_priv
+               = (x.60*inv(x.61))
+         dh_kernel_pub
+               = x.62^(x.61*inv((x.60*x.63)))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.61*inv((x.60*x.63))), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.62^inv(x.63)
+    
+     82. dh_icu_priv
+               = (x.60*inv(x.61))
+         dh_kernel_pub
+               = x.62^(x.61*inv((x.60*x.63)))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.62^(x.61*inv((x.60*x.63))), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.62^inv(x.63)
+    
+     83. dh_icu_priv
+               = (x.60*inv((x.61*x.62)))
+         dh_kernel_pub
+               = x.63^x.62
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^x.62, n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.63^(x.60*inv(x.61))
+    
+     84. dh_icu_priv
+               = (x.60*inv((x.61*x.62)))
+         dh_kernel_pub
+               = x.63^x.62
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^x.62, n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.63^(x.60*inv(x.61))
+    
+     85. dh_icu_priv
+               = (x.60*inv((x.61*x.62)))
+         dh_kernel_pub
+               = x.63^(x.62*inv(x.60))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.62*inv(x.60)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = n_icu_sig_k.38
+         z     = verify(n_icu_sig_k.38, <'icu_nonce', n_icu.37>, pk(x.65))
+         z.1   = true
+         z.2   = x.63^inv(x.61)
+    
+     86. dh_icu_priv
+               = (x.60*inv((x.61*x.62)))
+         dh_kernel_pub
+               = x.63^(x.62*inv(x.60))
+         kernel_pub
+               = pk(x.65)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.62*inv(x.60)), n_icu.37>, x.65)
+         n_icu = n_icu.37
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.37>, x.65)
+         z     = true
+         z.1   = true
+         z.2   = x.63^inv(x.61)
+    
+     87. dh_icu_priv
+               = (x.61*x.62)
+         dh_kernel_pub
+               = x.63^(x.64*inv((x.61*x.65)))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.64*inv((x.61*x.65))), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.63^(x.62*x.64*inv(x.65))
+    
+     88. dh_icu_priv
+               = (x.61*x.62)
+         dh_kernel_pub
+               = x.63^(x.64*inv((x.61*x.65)))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.64*inv((x.61*x.65))), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.63^(x.62*x.64*inv(x.65))
+    
+     89. dh_icu_priv
+               = (x.61*x.62*inv(x.63))
+         dh_kernel_pub
+               = x.64^inv((x.62*x.65))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^inv((x.62*x.65)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.64^(x.61*inv((x.63*x.65)))
+    
+     90. dh_icu_priv
+               = (x.61*x.62*inv(x.63))
+         dh_kernel_pub
+               = x.64^inv((x.62*x.65))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^inv((x.62*x.65)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.64^(x.61*inv((x.63*x.65)))
+    
+     91. dh_icu_priv
+               = (x.61*x.62*inv(x.63))
+         dh_kernel_pub
+               = x.64^(x.63*x.65*inv(x.61))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.63*x.65*inv(x.61)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.64^(x.62*x.65)
+    
+     92. dh_icu_priv
+               = (x.61*x.62*inv(x.63))
+         dh_kernel_pub
+               = x.64^(x.63*x.65*inv(x.61))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.63*x.65*inv(x.61)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.64^(x.62*x.65)
+    
+     93. dh_icu_priv
+               = (x.61*x.62*inv(x.63))
+         dh_kernel_pub
+               = x.64^(x.63*inv((x.61*x.65)))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.63*inv((x.61*x.65))), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.64^(x.62*inv(x.65))
+    
+     94. dh_icu_priv
+               = (x.61*x.62*inv(x.63))
+         dh_kernel_pub
+               = x.64^(x.63*inv((x.61*x.65)))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.63*inv((x.61*x.65))), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.64^(x.62*inv(x.65))
+    
+     95. dh_icu_priv
+               = (x.61*x.62*inv((x.63*x.64)))
+         dh_kernel_pub
+               = x.65^(x.64*inv(x.62))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.65^(x.64*inv(x.62)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.65^(x.61*inv(x.63))
+    
+     96. dh_icu_priv
+               = (x.61*x.62*inv((x.63*x.64)))
+         dh_kernel_pub
+               = x.65^(x.64*inv(x.62))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.65^(x.64*inv(x.62)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.65^(x.61*inv(x.63))
+    
+     97. dh_icu_priv
+               = (x.61*inv(x.62))
+         dh_kernel_pub
+               = x.63^(x.62*x.64*inv((x.61*x.65)))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.62*x.64*inv((x.61*x.65))), n_icu.38>,
+                      x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.63^(x.64*inv(x.65))
+    
+     98. dh_icu_priv
+               = (x.61*inv(x.62))
+         dh_kernel_pub
+               = x.63^(x.62*x.64*inv((x.61*x.65)))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.62*x.64*inv((x.61*x.65))), n_icu.38>,
+                      x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.63^(x.64*inv(x.65))
+    
+     99. dh_icu_priv
+               = (x.61*inv(x.62))
+         dh_kernel_pub
+               = x.63^(x.64*inv(x.65))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.64*inv(x.65)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.63^(x.61*x.64*inv((x.62*x.65)))
+    
+    100. dh_icu_priv
+               = (x.61*inv(x.62))
+         dh_kernel_pub
+               = x.63^(x.64*inv(x.65))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.64*inv(x.65)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.63^(x.61*x.64*inv((x.62*x.65)))
+    
+    101. dh_icu_priv
+               = (x.61*inv(x.62))
+         dh_kernel_pub
+               = x.63^(x.64*inv((x.61*x.65)))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.64*inv((x.61*x.65))), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.63^(x.64*inv((x.62*x.65)))
+    
+    102. dh_icu_priv
+               = (x.61*inv(x.62))
+         dh_kernel_pub
+               = x.63^(x.64*inv((x.61*x.65)))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.63^(x.64*inv((x.61*x.65))), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.63^(x.64*inv((x.62*x.65)))
+    
+    103. dh_icu_priv
+               = (x.61*inv((x.62*x.63)))
+         dh_kernel_pub
+               = x.64^(x.62*x.65)
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.62*x.65), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.64^(x.61*x.65*inv(x.63))
+    
+    104. dh_icu_priv
+               = (x.61*inv((x.62*x.63)))
+         dh_kernel_pub
+               = x.64^(x.62*x.65)
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.62*x.65), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.64^(x.61*x.65*inv(x.63))
+    
+    105. dh_icu_priv
+               = (x.61*inv((x.62*x.63)))
+         dh_kernel_pub
+               = x.64^(x.62*x.65*inv(x.61))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.62*x.65*inv(x.61)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.64^(x.65*inv(x.63))
+    
+    106. dh_icu_priv
+               = (x.61*inv((x.62*x.63)))
+         dh_kernel_pub
+               = x.64^(x.62*x.65*inv(x.61))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.62*x.65*inv(x.61)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.64^(x.65*inv(x.63))
+    
+    107. dh_icu_priv
+               = (x.61*inv((x.62*x.63)))
+         dh_kernel_pub
+               = x.64^(x.62*inv(x.65))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.62*inv(x.65)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.64^(x.61*inv((x.63*x.65)))
+    
+    108. dh_icu_priv
+               = (x.61*inv((x.62*x.63)))
+         dh_kernel_pub
+               = x.64^(x.62*inv(x.65))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.62*inv(x.65)), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.64^(x.61*inv((x.63*x.65)))
+    
+    109. dh_icu_priv
+               = (x.61*inv((x.62*x.63)))
+         dh_kernel_pub
+               = x.64^(x.62*inv((x.61*x.65)))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.62*inv((x.61*x.65))), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = n_icu_sig_k.39
+         z     = verify(n_icu_sig_k.39, <'icu_nonce', n_icu.38>, pk(x.67))
+         z.1   = true
+         z.2   = x.64^inv((x.63*x.65))
+    
+    110. dh_icu_priv
+               = (x.61*inv((x.62*x.63)))
+         dh_kernel_pub
+               = x.64^(x.62*inv((x.61*x.65)))
+         kernel_pub
+               = pk(x.67)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.64^(x.62*inv((x.61*x.65))), n_icu.38>, x.67)
+         n_icu = n_icu.38
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.38>, x.67)
+         z     = true
+         z.1   = true
+         z.2   = x.64^inv((x.63*x.65))
+    
+    111. dh_icu_priv
+               = (x.62*x.63*inv(x.64))
+         dh_kernel_pub
+               = x.65^(x.64*x.66*inv((x.62*x.67)))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.65^(x.64*x.66*inv((x.62*x.67))), n_icu.39>,
+                      x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = n_icu_sig_k.40
+         z     = verify(n_icu_sig_k.40, <'icu_nonce', n_icu.39>, pk(x.69))
+         z.1   = true
+         z.2   = x.65^(x.63*x.66*inv(x.67))
+    
+    112. dh_icu_priv
+               = (x.62*x.63*inv(x.64))
+         dh_kernel_pub
+               = x.65^(x.64*x.66*inv((x.62*x.67)))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.65^(x.64*x.66*inv((x.62*x.67))), n_icu.39>,
+                      x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.39>, x.69)
+         z     = true
+         z.1   = true
+         z.2   = x.65^(x.63*x.66*inv(x.67))
+    
+    113. dh_icu_priv
+               = (x.62*x.63*inv(x.64))
+         dh_kernel_pub
+               = x.65^(x.66*inv((x.62*x.67)))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.65^(x.66*inv((x.62*x.67))), n_icu.39>, x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = n_icu_sig_k.40
+         z     = verify(n_icu_sig_k.40, <'icu_nonce', n_icu.39>, pk(x.69))
+         z.1   = true
+         z.2   = x.65^(x.63*x.66*inv((x.64*x.67)))
+    
+    114. dh_icu_priv
+               = (x.62*x.63*inv(x.64))
+         dh_kernel_pub
+               = x.65^(x.66*inv((x.62*x.67)))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.65^(x.66*inv((x.62*x.67))), n_icu.39>, x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.39>, x.69)
+         z     = true
+         z.1   = true
+         z.2   = x.65^(x.63*x.66*inv((x.64*x.67)))
+    
+    115. dh_icu_priv
+               = (x.62*x.63*inv((x.64*x.65)))
+         dh_kernel_pub
+               = x.66^(x.64*x.67*inv(x.62))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.66^(x.64*x.67*inv(x.62)), n_icu.39>, x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = n_icu_sig_k.40
+         z     = verify(n_icu_sig_k.40, <'icu_nonce', n_icu.39>, pk(x.69))
+         z.1   = true
+         z.2   = x.66^(x.63*x.67*inv(x.65))
+    
+    116. dh_icu_priv
+               = (x.62*x.63*inv((x.64*x.65)))
+         dh_kernel_pub
+               = x.66^(x.64*x.67*inv(x.62))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.66^(x.64*x.67*inv(x.62)), n_icu.39>, x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.39>, x.69)
+         z     = true
+         z.1   = true
+         z.2   = x.66^(x.63*x.67*inv(x.65))
+    
+    117. dh_icu_priv
+               = (x.62*x.63*inv((x.64*x.65)))
+         dh_kernel_pub
+               = x.66^(x.64*inv((x.62*x.67)))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.66^(x.64*inv((x.62*x.67))), n_icu.39>, x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = n_icu_sig_k.40
+         z     = verify(n_icu_sig_k.40, <'icu_nonce', n_icu.39>, pk(x.69))
+         z.1   = true
+         z.2   = x.66^(x.63*inv((x.65*x.67)))
+    
+    118. dh_icu_priv
+               = (x.62*x.63*inv((x.64*x.65)))
+         dh_kernel_pub
+               = x.66^(x.64*inv((x.62*x.67)))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.66^(x.64*inv((x.62*x.67))), n_icu.39>, x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.39>, x.69)
+         z     = true
+         z.1   = true
+         z.2   = x.66^(x.63*inv((x.65*x.67)))
+    
+    119. dh_icu_priv
+               = (x.62*inv((x.63*x.64)))
+         dh_kernel_pub
+               = x.65^(x.63*x.66*inv(x.67))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.65^(x.63*x.66*inv(x.67)), n_icu.39>, x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = n_icu_sig_k.40
+         z     = verify(n_icu_sig_k.40, <'icu_nonce', n_icu.39>, pk(x.69))
+         z.1   = true
+         z.2   = x.65^(x.62*x.66*inv((x.64*x.67)))
+    
+    120. dh_icu_priv
+               = (x.62*inv((x.63*x.64)))
+         dh_kernel_pub
+               = x.65^(x.63*x.66*inv(x.67))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.65^(x.63*x.66*inv(x.67)), n_icu.39>, x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.39>, x.69)
+         z     = true
+         z.1   = true
+         z.2   = x.65^(x.62*x.66*inv((x.64*x.67)))
+    
+    121. dh_icu_priv
+               = (x.62*inv((x.63*x.64)))
+         dh_kernel_pub
+               = x.65^(x.63*x.66*inv((x.62*x.67)))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.65^(x.63*x.66*inv((x.62*x.67))), n_icu.39>,
+                      x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = n_icu_sig_k.40
+         z     = verify(n_icu_sig_k.40, <'icu_nonce', n_icu.39>, pk(x.69))
+         z.1   = true
+         z.2   = x.65^(x.66*inv((x.64*x.67)))
+    
+    122. dh_icu_priv
+               = (x.62*inv((x.63*x.64)))
+         dh_kernel_pub
+               = x.65^(x.63*x.66*inv((x.62*x.67)))
+         kernel_pub
+               = pk(x.69)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.65^(x.63*x.66*inv((x.62*x.67))), n_icu.39>,
+                      x.69)
+         n_icu = n_icu.39
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.39>, x.69)
+         z     = true
+         z.1   = true
+         z.2   = x.65^(x.66*inv((x.64*x.67)))
+    
+    123. dh_icu_priv
+               = (x.63*x.64*inv((x.65*x.66)))
+         dh_kernel_pub
+               = x.67^(x.65*x.68*inv((x.63*x.69)))
+         kernel_pub
+               = pk(x.71)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.67^(x.65*x.68*inv((x.63*x.69))), n_icu.40>,
+                      x.71)
+         n_icu = n_icu.40
+         n_icu_sig_k
+               = n_icu_sig_k.41
+         z     = verify(n_icu_sig_k.41, <'icu_nonce', n_icu.40>, pk(x.71))
+         z.1   = true
+         z.2   = x.67^(x.64*x.68*inv((x.66*x.69)))
+    
+    124. dh_icu_priv
+               = (x.63*x.64*inv((x.65*x.66)))
+         dh_kernel_pub
+               = x.67^(x.65*x.68*inv((x.63*x.69)))
+         kernel_pub
+               = pk(x.71)
+         kernel_reply_sig
+               = sign(<'kernel_reply', x.67^(x.65*x.68*inv((x.63*x.69))), n_icu.40>,
+                      x.71)
+         n_icu = n_icu.40
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.40>, x.71)
+         z     = true
+         z.1   = true
+         z.2   = x.67^(x.64*x.68*inv((x.66*x.69)))
+    
+    125. dh_icu_priv
+               = (x.69*x.70)
+         dh_kernel_pub
+               = x.71^inv(x.69)
+         kernel_pub
+               = pk(x.73)
+         kernel_reply_sig
+               = kernel_reply_sig.40
+         n_icu = n_icu.42
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.42>, x.73)
+         z     = true
+         z.1   = verify(kernel_reply_sig.40,
+                        <'kernel_reply', x.71^inv(x.69), n_icu.42>, pk(x.73))
+         z.2   = x.71^x.70
+    
+    126. dh_icu_priv
+               = (x.69*inv(x.70))
+         dh_kernel_pub
+               = z.48^(x.70*inv(x.69))
+         kernel_pub
+               = pk(x.73)
+         kernel_reply_sig
+               = kernel_reply_sig.40
+         n_icu = n_icu.42
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.42>, x.73)
+         z     = true
+         z.1   = verify(kernel_reply_sig.40,
+                        <'kernel_reply', z.48^(x.70*inv(x.69)), n_icu.42>, pk(x.73))
+         z.2   = z.48
+    
+    127. dh_icu_priv
+               = (x.69*inv(x.70))
+         dh_kernel_pub
+               = x.71^x.70
+         kernel_pub
+               = pk(x.73)
+         kernel_reply_sig
+               = kernel_reply_sig.40
+         n_icu = n_icu.42
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.42>, x.73)
+         z     = true
+         z.1   = verify(kernel_reply_sig.40,
+                        <'kernel_reply', x.71^x.70, n_icu.42>, pk(x.73))
+         z.2   = x.71^x.69
+    
+    128. dh_icu_priv
+               = (x.70*x.71)
+         dh_kernel_pub
+               = x.72^inv((x.70*x.73))
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.72^inv((x.70*x.73)), n_icu.43>, pk(x.75))
+         z.2   = x.72^(x.71*inv(x.73))
+    
+    129. dh_icu_priv
+               = (x.70*x.71)
+         dh_kernel_pub
+               = x.72^(x.73*inv(x.70))
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.72^(x.73*inv(x.70)), n_icu.43>, pk(x.75))
+         z.2   = x.72^(x.71*x.73)
+    
+    130. dh_icu_priv
+               = (x.70*x.71*inv(x.72))
+         dh_kernel_pub
+               = x.73^(x.72*inv(x.70))
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.73^(x.72*inv(x.70)), n_icu.43>, pk(x.75))
+         z.2   = x.73^x.71
+    
+    131. dh_icu_priv
+               = (x.70*inv(x.71))
+         dh_kernel_pub
+               = x.72^inv(x.73)
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.72^inv(x.73), n_icu.43>, pk(x.75))
+         z.2   = x.72^(x.70*inv((x.71*x.73)))
+    
+    132. dh_icu_priv
+               = (x.70*inv(x.71))
+         dh_kernel_pub
+               = x.72^inv((x.70*x.73))
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.72^inv((x.70*x.73)), n_icu.43>, pk(x.75))
+         z.2   = x.72^inv((x.71*x.73))
+    
+    133. dh_icu_priv
+               = (x.70*inv(x.71))
+         dh_kernel_pub
+               = x.72^(x.71*x.73)
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.72^(x.71*x.73), n_icu.43>, pk(x.75))
+         z.2   = x.72^(x.70*x.73)
+    
+    134. dh_icu_priv
+               = (x.70*inv(x.71))
+         dh_kernel_pub
+               = x.72^(x.71*x.73*inv(x.70))
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.72^(x.71*x.73*inv(x.70)), n_icu.43>, pk(x.75))
+         z.2   = x.72^x.73
+    
+    135. dh_icu_priv
+               = (x.70*inv(x.71))
+         dh_kernel_pub
+               = x.72^(x.71*inv((x.70*x.73)))
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.72^(x.71*inv((x.70*x.73))), n_icu.43>, pk(x.75))
+         z.2   = x.72^inv(x.73)
+    
+    136. dh_icu_priv
+               = (x.70*inv((x.71*x.72)))
+         dh_kernel_pub
+               = x.73^x.72
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.73^x.72, n_icu.43>, pk(x.75))
+         z.2   = x.73^(x.70*inv(x.71))
+    
+    137. dh_icu_priv
+               = (x.70*inv((x.71*x.72)))
+         dh_kernel_pub
+               = x.73^(x.72*inv(x.70))
+         kernel_pub
+               = pk(x.75)
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.43>, x.75)
+         z     = true
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.73^(x.72*inv(x.70)), n_icu.43>, pk(x.75))
+         z.2   = x.73^inv(x.71)
+    
+    138. dh_icu_priv
+               = (x.71*x.72)
+         dh_kernel_pub
+               = x.73^(x.74*inv((x.71*x.75)))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.73^(x.74*inv((x.71*x.75))), n_icu.44>, pk(x.77))
+         z.2   = x.73^(x.72*x.74*inv(x.75))
+    
+    139. dh_icu_priv
+               = (x.71*x.72*inv(x.73))
+         dh_kernel_pub
+               = x.74^inv((x.72*x.75))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.74^inv((x.72*x.75)), n_icu.44>, pk(x.77))
+         z.2   = x.74^(x.71*inv((x.73*x.75)))
+    
+    140. dh_icu_priv
+               = (x.71*x.72*inv(x.73))
+         dh_kernel_pub
+               = x.74^(x.73*x.75*inv(x.71))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.74^(x.73*x.75*inv(x.71)), n_icu.44>, pk(x.77))
+         z.2   = x.74^(x.72*x.75)
+    
+    141. dh_icu_priv
+               = (x.71*x.72*inv(x.73))
+         dh_kernel_pub
+               = x.74^(x.73*inv((x.71*x.75)))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.74^(x.73*inv((x.71*x.75))), n_icu.44>, pk(x.77))
+         z.2   = x.74^(x.72*inv(x.75))
+    
+    142. dh_icu_priv
+               = (x.71*x.72*inv((x.73*x.74)))
+         dh_kernel_pub
+               = x.75^(x.74*inv(x.72))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.75^(x.74*inv(x.72)), n_icu.44>, pk(x.77))
+         z.2   = x.75^(x.71*inv(x.73))
+    
+    143. dh_icu_priv
+               = (x.71*inv(x.72))
+         dh_kernel_pub
+               = z.48^(x.72*inv(x.71))
+         kernel_pub
+               = kernel_pub.39
+         kernel_reply_sig
+               = kernel_reply_sig.40
+         n_icu = n_icu.42
+         n_icu_sig_k
+               = n_icu_sig_k.43
+         z     = verify(n_icu_sig_k.43, <'icu_nonce', n_icu.42>, kernel_pub.39)
+         z.1   = verify(kernel_reply_sig.40,
+                        <'kernel_reply', z.48^(x.72*inv(x.71)), n_icu.42>, kernel_pub.39)
+         z.2   = z.48
+    
+    144. dh_icu_priv
+               = (x.71*inv(x.72))
+         dh_kernel_pub
+               = x.73^(x.72*x.74*inv((x.71*x.75)))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.73^(x.72*x.74*inv((x.71*x.75))), n_icu.44>, pk(x.77))
+         z.2   = x.73^(x.74*inv(x.75))
+    
+    145. dh_icu_priv
+               = (x.71*inv(x.72))
+         dh_kernel_pub
+               = x.73^(x.74*inv(x.75))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.73^(x.74*inv(x.75)), n_icu.44>, pk(x.77))
+         z.2   = x.73^(x.71*x.74*inv((x.72*x.75)))
+    
+    146. dh_icu_priv
+               = (x.71*inv(x.72))
+         dh_kernel_pub
+               = x.73^(x.74*inv((x.71*x.75)))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.73^(x.74*inv((x.71*x.75))), n_icu.44>, pk(x.77))
+         z.2   = x.73^(x.74*inv((x.72*x.75)))
+    
+    147. dh_icu_priv
+               = (x.71*inv((x.72*x.73)))
+         dh_kernel_pub
+               = x.74^(x.72*x.75)
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.74^(x.72*x.75), n_icu.44>, pk(x.77))
+         z.2   = x.74^(x.71*x.75*inv(x.73))
+    
+    148. dh_icu_priv
+               = (x.71*inv((x.72*x.73)))
+         dh_kernel_pub
+               = x.74^(x.72*x.75*inv(x.71))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.74^(x.72*x.75*inv(x.71)), n_icu.44>, pk(x.77))
+         z.2   = x.74^(x.75*inv(x.73))
+    
+    149. dh_icu_priv
+               = (x.71*inv((x.72*x.73)))
+         dh_kernel_pub
+               = x.74^(x.72*inv(x.75))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.74^(x.72*inv(x.75)), n_icu.44>, pk(x.77))
+         z.2   = x.74^(x.71*inv((x.73*x.75)))
+    
+    150. dh_icu_priv
+               = (x.71*inv((x.72*x.73)))
+         dh_kernel_pub
+               = x.74^(x.72*inv((x.71*x.75)))
+         kernel_pub
+               = pk(x.77)
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.44>, x.77)
+         z     = true
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.74^(x.72*inv((x.71*x.75))), n_icu.44>, pk(x.77))
+         z.2   = x.74^inv((x.73*x.75))
+    
+    151. dh_icu_priv
+               = (x.72*x.73)
+         dh_kernel_pub
+               = x.74^inv(x.72)
+         kernel_pub
+               = kernel_pub.40
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = n_icu_sig_k.44
+         z     = verify(n_icu_sig_k.44, <'icu_nonce', n_icu.43>, kernel_pub.40)
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.74^inv(x.72), n_icu.43>, kernel_pub.40)
+         z.2   = x.74^x.73
+    
+    152. dh_icu_priv
+               = (x.72*x.73*inv(x.74))
+         dh_kernel_pub
+               = x.75^(x.74*x.76*inv((x.72*x.77)))
+         kernel_pub
+               = pk(x.79)
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.45>, x.79)
+         z     = true
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.75^(x.74*x.76*inv((x.72*x.77))), n_icu.45>, pk(x.79))
+         z.2   = x.75^(x.73*x.76*inv(x.77))
+    
+    153. dh_icu_priv
+               = (x.72*x.73*inv(x.74))
+         dh_kernel_pub
+               = x.75^(x.76*inv((x.72*x.77)))
+         kernel_pub
+               = pk(x.79)
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.45>, x.79)
+         z     = true
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.75^(x.76*inv((x.72*x.77))), n_icu.45>, pk(x.79))
+         z.2   = x.75^(x.73*x.76*inv((x.74*x.77)))
+    
+    154. dh_icu_priv
+               = (x.72*x.73*inv((x.74*x.75)))
+         dh_kernel_pub
+               = x.76^(x.74*x.77*inv(x.72))
+         kernel_pub
+               = pk(x.79)
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.45>, x.79)
+         z     = true
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.76^(x.74*x.77*inv(x.72)), n_icu.45>, pk(x.79))
+         z.2   = x.76^(x.73*x.77*inv(x.75))
+    
+    155. dh_icu_priv
+               = (x.72*x.73*inv((x.74*x.75)))
+         dh_kernel_pub
+               = x.76^(x.74*inv((x.72*x.77)))
+         kernel_pub
+               = pk(x.79)
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.45>, x.79)
+         z     = true
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.76^(x.74*inv((x.72*x.77))), n_icu.45>, pk(x.79))
+         z.2   = x.76^(x.73*inv((x.75*x.77)))
+    
+    156. dh_icu_priv
+               = (x.72*inv(x.73))
+         dh_kernel_pub
+               = x.74^x.73
+         kernel_pub
+               = kernel_pub.40
+         kernel_reply_sig
+               = kernel_reply_sig.41
+         n_icu = n_icu.43
+         n_icu_sig_k
+               = n_icu_sig_k.44
+         z     = verify(n_icu_sig_k.44, <'icu_nonce', n_icu.43>, kernel_pub.40)
+         z.1   = verify(kernel_reply_sig.41,
+                        <'kernel_reply', x.74^x.73, n_icu.43>, kernel_pub.40)
+         z.2   = x.74^x.72
+    
+    157. dh_icu_priv
+               = (x.72*inv((x.73*x.74)))
+         dh_kernel_pub
+               = x.75^(x.73*x.76*inv(x.77))
+         kernel_pub
+               = pk(x.79)
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.45>, x.79)
+         z     = true
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.75^(x.73*x.76*inv(x.77)), n_icu.45>, pk(x.79))
+         z.2   = x.75^(x.72*x.76*inv((x.74*x.77)))
+    
+    158. dh_icu_priv
+               = (x.72*inv((x.73*x.74)))
+         dh_kernel_pub
+               = x.75^(x.73*x.76*inv((x.72*x.77)))
+         kernel_pub
+               = pk(x.79)
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.45>, x.79)
+         z     = true
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.75^(x.73*x.76*inv((x.72*x.77))), n_icu.45>, pk(x.79))
+         z.2   = x.75^(x.76*inv((x.74*x.77)))
+    
+    159. dh_icu_priv
+               = (x.73*x.74)
+         dh_kernel_pub
+               = x.75^inv((x.73*x.76))
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.75^inv((x.73*x.76)), n_icu.44>, kernel_pub.41)
+         z.2   = x.75^(x.74*inv(x.76))
+    
+    160. dh_icu_priv
+               = (x.73*x.74)
+         dh_kernel_pub
+               = x.75^(x.76*inv(x.73))
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.75^(x.76*inv(x.73)), n_icu.44>, kernel_pub.41)
+         z.2   = x.75^(x.74*x.76)
+    
+    161. dh_icu_priv
+               = (x.73*x.74*inv(x.75))
+         dh_kernel_pub
+               = x.76^(x.75*inv(x.73))
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.76^(x.75*inv(x.73)), n_icu.44>, kernel_pub.41)
+         z.2   = x.76^x.74
+    
+    162. dh_icu_priv
+               = (x.73*x.74*inv((x.75*x.76)))
+         dh_kernel_pub
+               = x.77^(x.75*x.78*inv((x.73*x.79)))
+         kernel_pub
+               = pk(x.81)
+         kernel_reply_sig
+               = kernel_reply_sig.44
+         n_icu = n_icu.46
+         n_icu_sig_k
+               = sign(<'icu_nonce', n_icu.46>, x.81)
+         z     = true
+         z.1   = verify(kernel_reply_sig.44,
+                        <'kernel_reply', x.77^(x.75*x.78*inv((x.73*x.79))), n_icu.46>, pk(x.81))
+         z.2   = x.77^(x.74*x.78*inv((x.76*x.79)))
+    
+    163. dh_icu_priv
+               = (x.73*inv(x.74))
+         dh_kernel_pub
+               = x.75^inv(x.76)
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.75^inv(x.76), n_icu.44>, kernel_pub.41)
+         z.2   = x.75^(x.73*inv((x.74*x.76)))
+    
+    164. dh_icu_priv
+               = (x.73*inv(x.74))
+         dh_kernel_pub
+               = x.75^inv((x.73*x.76))
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.75^inv((x.73*x.76)), n_icu.44>, kernel_pub.41)
+         z.2   = x.75^inv((x.74*x.76))
+    
+    165. dh_icu_priv
+               = (x.73*inv(x.74))
+         dh_kernel_pub
+               = x.75^(x.74*x.76)
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.75^(x.74*x.76), n_icu.44>, kernel_pub.41)
+         z.2   = x.75^(x.73*x.76)
+    
+    166. dh_icu_priv
+               = (x.73*inv(x.74))
+         dh_kernel_pub
+               = x.75^(x.74*x.76*inv(x.73))
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.75^(x.74*x.76*inv(x.73)), n_icu.44>, kernel_pub.41)
+         z.2   = x.75^x.76
+    
+    167. dh_icu_priv
+               = (x.73*inv(x.74))
+         dh_kernel_pub
+               = x.75^(x.74*inv((x.73*x.76)))
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.75^(x.74*inv((x.73*x.76))), n_icu.44>, kernel_pub.41)
+         z.2   = x.75^inv(x.76)
+    
+    168. dh_icu_priv
+               = (x.73*inv((x.74*x.75)))
+         dh_kernel_pub
+               = x.76^x.75
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.76^x.75, n_icu.44>, kernel_pub.41)
+         z.2   = x.76^(x.73*inv(x.74))
+    
+    169. dh_icu_priv
+               = (x.73*inv((x.74*x.75)))
+         dh_kernel_pub
+               = x.76^(x.75*inv(x.73))
+         kernel_pub
+               = kernel_pub.41
+         kernel_reply_sig
+               = kernel_reply_sig.42
+         n_icu = n_icu.44
+         n_icu_sig_k
+               = n_icu_sig_k.45
+         z     = verify(n_icu_sig_k.45, <'icu_nonce', n_icu.44>, kernel_pub.41)
+         z.1   = verify(kernel_reply_sig.42,
+                        <'kernel_reply', x.76^(x.75*inv(x.73)), n_icu.44>, kernel_pub.41)
+         z.2   = x.76^inv(x.74)
+    
+    170. dh_icu_priv
+               = (x.74*x.75)
+         dh_kernel_pub
+               = x.76^(x.77*inv((x.74*x.78)))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.76^(x.77*inv((x.74*x.78))), n_icu.45>, kernel_pub.42)
+         z.2   = x.76^(x.75*x.77*inv(x.78))
+    
+    171. dh_icu_priv
+               = (x.74*x.75*inv(x.76))
+         dh_kernel_pub
+               = x.77^inv((x.75*x.78))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.77^inv((x.75*x.78)), n_icu.45>, kernel_pub.42)
+         z.2   = x.77^(x.74*inv((x.76*x.78)))
+    
+    172. dh_icu_priv
+               = (x.74*x.75*inv(x.76))
+         dh_kernel_pub
+               = x.77^(x.76*x.78*inv(x.74))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.77^(x.76*x.78*inv(x.74)), n_icu.45>, kernel_pub.42)
+         z.2   = x.77^(x.75*x.78)
+    
+    173. dh_icu_priv
+               = (x.74*x.75*inv(x.76))
+         dh_kernel_pub
+               = x.77^(x.76*inv((x.74*x.78)))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.77^(x.76*inv((x.74*x.78))), n_icu.45>, kernel_pub.42)
+         z.2   = x.77^(x.75*inv(x.78))
+    
+    174. dh_icu_priv
+               = (x.74*x.75*inv((x.76*x.77)))
+         dh_kernel_pub
+               = x.78^(x.77*inv(x.75))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.78^(x.77*inv(x.75)), n_icu.45>, kernel_pub.42)
+         z.2   = x.78^(x.74*inv(x.76))
+    
+    175. dh_icu_priv
+               = (x.74*inv(x.75))
+         dh_kernel_pub
+               = x.76^(x.75*x.77*inv((x.74*x.78)))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.76^(x.75*x.77*inv((x.74*x.78))), n_icu.45>,
+                        kernel_pub.42)
+         z.2   = x.76^(x.77*inv(x.78))
+    
+    176. dh_icu_priv
+               = (x.74*inv(x.75))
+         dh_kernel_pub
+               = x.76^(x.77*inv(x.78))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.76^(x.77*inv(x.78)), n_icu.45>, kernel_pub.42)
+         z.2   = x.76^(x.74*x.77*inv((x.75*x.78)))
+    
+    177. dh_icu_priv
+               = (x.74*inv(x.75))
+         dh_kernel_pub
+               = x.76^(x.77*inv((x.74*x.78)))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.76^(x.77*inv((x.74*x.78))), n_icu.45>, kernel_pub.42)
+         z.2   = x.76^(x.77*inv((x.75*x.78)))
+    
+    178. dh_icu_priv
+               = (x.74*inv((x.75*x.76)))
+         dh_kernel_pub
+               = x.77^(x.75*x.78)
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.77^(x.75*x.78), n_icu.45>, kernel_pub.42)
+         z.2   = x.77^(x.74*x.78*inv(x.76))
+    
+    179. dh_icu_priv
+               = (x.74*inv((x.75*x.76)))
+         dh_kernel_pub
+               = x.77^(x.75*x.78*inv(x.74))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.77^(x.75*x.78*inv(x.74)), n_icu.45>, kernel_pub.42)
+         z.2   = x.77^(x.78*inv(x.76))
+    
+    180. dh_icu_priv
+               = (x.74*inv((x.75*x.76)))
+         dh_kernel_pub
+               = x.77^(x.75*inv(x.78))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.77^(x.75*inv(x.78)), n_icu.45>, kernel_pub.42)
+         z.2   = x.77^(x.74*inv((x.76*x.78)))
+    
+    181. dh_icu_priv
+               = (x.74*inv((x.75*x.76)))
+         dh_kernel_pub
+               = x.77^(x.75*inv((x.74*x.78)))
+         kernel_pub
+               = kernel_pub.42
+         kernel_reply_sig
+               = kernel_reply_sig.43
+         n_icu = n_icu.45
+         n_icu_sig_k
+               = n_icu_sig_k.46
+         z     = verify(n_icu_sig_k.46, <'icu_nonce', n_icu.45>, kernel_pub.42)
+         z.1   = verify(kernel_reply_sig.43,
+                        <'kernel_reply', x.77^(x.75*inv((x.74*x.78))), n_icu.45>, kernel_pub.42)
+         z.2   = x.77^inv((x.76*x.78))
+    
+    182. dh_icu_priv
+               = (x.75*x.76*inv(x.77))
+         dh_kernel_pub
+               = x.78^(x.77*x.79*inv((x.75*x.80)))
+         kernel_pub
+               = kernel_pub.43
+         kernel_reply_sig
+               = kernel_reply_sig.44
+         n_icu = n_icu.46
+         n_icu_sig_k
+               = n_icu_sig_k.47
+         z     = verify(n_icu_sig_k.47, <'icu_nonce', n_icu.46>, kernel_pub.43)
+         z.1   = verify(kernel_reply_sig.44,
+                        <'kernel_reply', x.78^(x.77*x.79*inv((x.75*x.80))), n_icu.46>,
+                        kernel_pub.43)
+         z.2   = x.78^(x.76*x.79*inv(x.80))
+    
+    183. dh_icu_priv
+               = (x.75*x.76*inv(x.77))
+         dh_kernel_pub
+               = x.78^(x.79*inv((x.75*x.80)))
+         kernel_pub
+               = kernel_pub.43
+         kernel_reply_sig
+               = kernel_reply_sig.44
+         n_icu = n_icu.46
+         n_icu_sig_k
+               = n_icu_sig_k.47
+         z     = verify(n_icu_sig_k.47, <'icu_nonce', n_icu.46>, kernel_pub.43)
+         z.1   = verify(kernel_reply_sig.44,
+                        <'kernel_reply', x.78^(x.79*inv((x.75*x.80))), n_icu.46>, kernel_pub.43)
+         z.2   = x.78^(x.76*x.79*inv((x.77*x.80)))
+    
+    184. dh_icu_priv
+               = (x.75*x.76*inv((x.77*x.78)))
+         dh_kernel_pub
+               = x.79^(x.77*x.80*inv(x.75))
+         kernel_pub
+               = kernel_pub.43
+         kernel_reply_sig
+               = kernel_reply_sig.44
+         n_icu = n_icu.46
+         n_icu_sig_k
+               = n_icu_sig_k.47
+         z     = verify(n_icu_sig_k.47, <'icu_nonce', n_icu.46>, kernel_pub.43)
+         z.1   = verify(kernel_reply_sig.44,
+                        <'kernel_reply', x.79^(x.77*x.80*inv(x.75)), n_icu.46>, kernel_pub.43)
+         z.2   = x.79^(x.76*x.80*inv(x.78))
+    
+    185. dh_icu_priv
+               = (x.75*x.76*inv((x.77*x.78)))
+         dh_kernel_pub
+               = x.79^(x.77*inv((x.75*x.80)))
+         kernel_pub
+               = kernel_pub.43
+         kernel_reply_sig
+               = kernel_reply_sig.44
+         n_icu = n_icu.46
+         n_icu_sig_k
+               = n_icu_sig_k.47
+         z     = verify(n_icu_sig_k.47, <'icu_nonce', n_icu.46>, kernel_pub.43)
+         z.1   = verify(kernel_reply_sig.44,
+                        <'kernel_reply', x.79^(x.77*inv((x.75*x.80))), n_icu.46>, kernel_pub.43)
+         z.2   = x.79^(x.76*inv((x.78*x.80)))
+    
+    186. dh_icu_priv
+               = (x.75*inv((x.76*x.77)))
+         dh_kernel_pub
+               = x.78^(x.76*x.79*inv(x.80))
+         kernel_pub
+               = kernel_pub.43
+         kernel_reply_sig
+               = kernel_reply_sig.44
+         n_icu = n_icu.46
+         n_icu_sig_k
+               = n_icu_sig_k.47
+         z     = verify(n_icu_sig_k.47, <'icu_nonce', n_icu.46>, kernel_pub.43)
+         z.1   = verify(kernel_reply_sig.44,
+                        <'kernel_reply', x.78^(x.76*x.79*inv(x.80)), n_icu.46>, kernel_pub.43)
+         z.2   = x.78^(x.75*x.79*inv((x.77*x.80)))
+    
+    187. dh_icu_priv
+               = (x.75*inv((x.76*x.77)))
+         dh_kernel_pub
+               = x.78^(x.76*x.79*inv((x.75*x.80)))
+         kernel_pub
+               = kernel_pub.43
+         kernel_reply_sig
+               = kernel_reply_sig.44
+         n_icu = n_icu.46
+         n_icu_sig_k
+               = n_icu_sig_k.47
+         z     = verify(n_icu_sig_k.47, <'icu_nonce', n_icu.46>, kernel_pub.43)
+         z.1   = verify(kernel_reply_sig.44,
+                        <'kernel_reply', x.78^(x.76*x.79*inv((x.75*x.80))), n_icu.46>,
+                        kernel_pub.43)
+         z.2   = x.78^(x.79*inv((x.77*x.80)))
+    
+    188. dh_icu_priv
+               = (x.76*x.77*inv((x.78*x.79)))
+         dh_kernel_pub
+               = x.80^(x.78*x.81*inv((x.76*x.82)))
+         kernel_pub
+               = kernel_pub.44
+         kernel_reply_sig
+               = kernel_reply_sig.45
+         n_icu = n_icu.47
+         n_icu_sig_k
+               = n_icu_sig_k.48
+         z     = verify(n_icu_sig_k.48, <'icu_nonce', n_icu.47>, kernel_pub.44)
+         z.1   = verify(kernel_reply_sig.45,
+                        <'kernel_reply', x.80^(x.78*x.81*inv((x.76*x.82))), n_icu.47>,
+                        kernel_pub.44)
+         z.2   = x.80^(x.77*x.81*inv((x.79*x.82)))
+  */
+
+restriction equality:
+  "∀ x y #i. (Eq( x, y ) @ #i) ⇒ (x = y)"
+  // safety formula
+
+restriction inequality:
+  "∀ x y #i. (NotEq( x, y ) @ #i) ⇒ (¬(x = y))"
+  // safety formula
+
+restriction only_once:
+  "∀ #i #j. ((OnlyOnce( ) @ #i) ∧ (OnlyOnce( ) @ #j)) ⇒ (#i = #j)"
+  // safety formula
+
+restriction uniqueness:
+  "∀ x #i #j. ((Unique( x ) @ #i) ∧ (Unique( x ) @ #j)) ⇒ (#i = #j)"
+  // safety formula
+
+lemma valid_session_can_be_created:
+  exists-trace
+  "((∀ icu1 icu2 #i #j.
+      ((RegisterICU( icu1 ) @ #i) ∧ (RegisterICU( icu2 ) @ #j)) ⇒
+      (icu1 = icu2)) ∧
+    (¬(∃ icu x #i. ResetIcu( icu, x ) @ #i))) ∧
+   (∃ kernel icu common_key #i #j.
+     (KernelDone( kernel, icu, common_key ) @ #i) ∧
+     (ICUDone( icu, kernel, common_key ) @ #j))"
+/*
+guarded formula characterizing all satisfying traces:
+"(∀ icu1 icu2 #i #j.
+   (RegisterICU( icu1 ) @ #i) ∧ (RegisterICU( icu2 ) @ #j) ⇒ icu1 = icu2) ∧
+ (∀ icu x #i. (ResetIcu( icu, x ) @ #i) ⇒ ⊥) ∧
+ (∃ kernel icu common_key #i #j.
+   (KernelDone( kernel, icu, common_key ) @ #i) ∧
+   (ICUDone( icu, kernel, common_key ) @ #j))"
+*/
+simplify
+solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
+  case kernel_to_icu_1
+  solve( !KernelPrivKey( $Kernel, kernel_priv ) ▶₃ #i )
+    case initialize_environment
+    solve( !CaPub( pk(x.1) ) ▶₄ #i )
+      case initialize_environment
+      solve( Icu_memory_1( $ICU, dh_icu_priv,
+                           <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
+             ) ▶₀ #j )
+        case icu_to_kernel_1_case_1
+        solve( !KU( sign(<'kernel_nonce', ~n_kernel>, x) ) @ #vk.7 )
+          case icu_to_kernel_1_case_1
+          solve( !KU( sign(<'icu_reply', n_icu, dh_icu_pub, ~n_kernel>, ~icu_priv)
+                 ) @ #vk.11 )
+            case icu_to_kernel_1_case_1
+            solve( !KU( sign(<'icu_nonce', ~n_icu>, x) ) @ #vk.25 )
+              case kernel_to_icu_2
+              solve( !KU( sign(<'kernel_nonce', ~n_kernel.1>, x.1) ) @ #vk.44 )
+                case icu_to_kernel_1_case_1
+                solve( NextICUCounter( x ) ▶₂ #vr.3 )
+                  case initialize_environment
+                  solve( !KU( ~n_kernel ) @ #vk.31 )
+                    case kernel_to_icu_1
+                    solve( !KU( ~n_icu ) @ #vk.13 )
+                      case icu_to_kernel_1
+                      solve( !KU( sign(<'icu', $ICU, pk(~icu_priv)>, ~ca_priv) ) @ #vk.26 )
+                        case icu_to_kernel_1_case_1
+                        solve( !KU( sign(<'kernel_reply', 'g'^~dh_kernel_priv, ~n_icu>,
+                                         ~kernel_priv)
+                               ) @ #vk.30 )
+                          case kernel_to_icu_2
+                          solve( !KU( sign(<'kernel_nonce', ~n_kernel>, ~kernel_priv) ) @ #vk.32 )
+                            case kernel_to_icu_1
+                            solve( !KU( sign(<'kernel', $Kernel, pk(~kernel_priv)>, ~ca_priv)
+                                   ) @ #vk.37 )
+                              case kernel_to_icu_1
+                              solve( !KU( pk(~icu_priv) ) @ #vk.30 )
+                                case icu_to_kernel_1
+                                solve( !KU( pk(~kernel_priv) ) @ #vk.37 )
+                                  case kernel_to_icu_1
+                                  solve( !KU( 'g'^~dh_icu_priv ) @ #vk.31 )
+                                    case icu_to_kernel_1
+                                    solve( !KU( 'g'^~dh_kernel_priv ) @ #vk.35 )
+                                      case kernel_to_icu_2
+                                      SOLVED // trace found
+                                    qed
+                                  qed
+                                qed
+                              qed
+                            qed
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma attacker_does_not_know_kernel_keys:
+  all-traces
+  "∀ kkey #i. (KernelKey( kkey ) @ #i) ⇒ (¬(∃ #j. K( kkey ) @ #j))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ kkey #i. (KernelKey( kkey ) @ #i) ∧ ∃ #j. (K( kkey ) @ #j)"
+*/
+simplify
+by solve( !KU( ~kernel_priv ) @ #vk )
+
+lemma attacker_does_not_know_icu_keys:
+  all-traces "∀ ikey #i. (IcuKey( ikey ) @ #i) ⇒ (¬(∃ #j. K( ikey ) @ #j))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ ikey #i. (IcuKey( ikey ) @ #i) ∧ ∃ #j. (K( ikey ) @ #j)"
+*/
+simplify
+solve( !CaPriv( ~ca_priv ) ▶₁ #i )
+  case initialize_environment
+  by solve( !KU( ~icu_priv ) @ #vk )
+qed
+
+lemma attacker_does_not_know_ca_keys:
+  all-traces
+  "∀ cakey #i. (CaKey( cakey ) @ #i) ⇒ (¬(∃ #j. K( cakey ) @ #j))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ cakey #i. (CaKey( cakey ) @ #i) ∧ ∃ #j. (K( cakey ) @ #j)"
+*/
+simplify
+by solve( !KU( ~ca_priv ) @ #vk )
+
+lemma attacker_does_not_know_symmetric_keys:
+  all-traces
+  "∀ num_icu #n.
+    (RegisteredICUs( num_icu ) @ #n) ⇒
+    (∀ reset_num #r.
+      (TotalResets( reset_num ) @ #r) ⇒
+      (∀ kernel icu common_key #i #j.
+        ((KernelDone( kernel, icu, common_key ) @ #i) ∧
+         (ICUDone( icu, kernel, common_key ) @ #j)) ⇒
+        (¬(∃ #k. K( common_key ) @ #k))))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ num_icu #n.
+  (RegisteredICUs( num_icu ) @ #n)
+ ∧
+  ∃ reset_num #r.
+   (TotalResets( reset_num ) @ #r)
+  ∧
+   ∃ kernel icu common_key #i #j.
+    (KernelDone( kernel, icu, common_key ) @ #i) ∧
+    (ICUDone( icu, kernel, common_key ) @ #j)
+   ∧
+    ∃ #k. (K( common_key ) @ #k)"
+*/
+simplify
+solve( !KU( sign(<'icu_reply', n_icu.1, dh_icu_pub, n_kernel>, x.1)
+       ) @ #vk.11 )
+  case c_sign
+  solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+    case initialize_environment
+    solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
+      case kernel_to_icu_1
+      solve( !KernelPrivKey( $Kernel, kernel_priv ) ▶₃ #i )
+        case initialize_environment
+        solve( !CaPub( pk(x.1) ) ▶₄ #i )
+          case initialize_environment
+          solve( Icu_memory_1( $ICU, dh_icu_priv,
+                               <'cert', $Kernel, pk(x.1), kernel_sig>, n_icu.1
+                 ) ▶₀ #j )
+            case icu_to_kernel_1_case_1
+            solve( !KU( sign(<'kernel_nonce', ~n_kernel>, x) ) @ #vk.12 )
+              case c_sign
+              solve( !KU( sign(<'icu', $ICU, pk(x)>, ~ca_priv) ) @ #vk.23 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.49 )
+              next
+                case icu_to_kernel_1_case_1
+                by solve( !KU( ~icu_priv ) @ #vk.33 )
+              next
+                case icu_to_kernel_1_case_2
+                by solve( !KU( ~icu_priv ) @ #vk.34 )
+              qed
+            next
+              case icu_to_kernel_1_case_1
+              by solve( !KU( ~icu_priv ) @ #vk.33 )
+            next
+              case icu_to_kernel_1_case_2
+              by solve( !KU( ~icu_priv ) @ #vk.33 )
+            next
+              case kernel_to_icu_1
+              by solve( !KU( ~kernel_priv ) @ #vk.32 )
+            qed
+          next
+            case icu_to_kernel_1_case_2
+            solve( !KU( sign(<'kernel_nonce', ~n_kernel>, x) ) @ #vk.12 )
+              case c_sign
+              solve( !KU( sign(<'icu', $ICU, pk(x)>, ~ca_priv) ) @ #vk.23 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.49 )
+              next
+                case icu_to_kernel_1_case_1
+                by solve( !KU( ~icu_priv ) @ #vk.34 )
+              next
+                case icu_to_kernel_1_case_2
+                by solve( !KU( ~icu_priv ) @ #vk.34 )
+              qed
+            next
+              case icu_to_kernel_1_case_1
+              by solve( !KU( ~icu_priv ) @ #vk.33 )
+            next
+              case icu_to_kernel_1_case_2
+              by solve( !KU( ~icu_priv ) @ #vk.33 )
+            next
+              case kernel_to_icu_1
+              by solve( !KU( ~kernel_priv ) @ #vk.32 )
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+next
+  case icu_to_kernel_1_case_1
+  solve( !KU( 'g'^(~dh_icu_priv*~dh_kernel_priv) ) @ #vk.27 )
+    case c_exp
+    by solve( !KU( ~dh_icu_priv ) @ #vk.41 )
+  next
+    case icu_to_kernel_1
+    by solve( !KU( ~dh_kernel_priv ) @ #vk.39 )
+  next
+    case kernel_to_icu_2
+    by solve( !KU( ~dh_icu_priv ) @ #vk.39 )
+  qed
+next
+  case icu_to_kernel_1_case_2
+  solve( !KU( 'g'^(~dh_icu_priv*~dh_kernel_priv) ) @ #vk.27 )
+    case c_exp
+    by solve( !KU( ~dh_icu_priv ) @ #vk.41 )
+  next
+    case icu_to_kernel_1
+    by solve( !KU( ~dh_kernel_priv ) @ #vk.39 )
+  next
+    case kernel_to_icu_2
+    by solve( !KU( ~dh_icu_priv ) @ #vk.39 )
+  qed
+qed
+
+lemma kernel_trust_means_icu_reply [use_induction]:
+  all-traces
+  "∀ num_icu #n.
+    (RegisteredICUs( num_icu ) @ #n) ⇒
+    (∀ reset_num #r.
+      (TotalResets( reset_num ) @ #r) ⇒
+      (∀ icu kernel key_material #i.
+        (KernelTrust( kernel, icu, key_material ) @ #i) ⇒
+        (∃ #j. (#j < #i) ∧ (ICUReply( icu, kernel, key_material ) @ #j))))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ num_icu #n.
+  (RegisteredICUs( num_icu ) @ #n)
+ ∧
+  ∃ reset_num #r.
+   (TotalResets( reset_num ) @ #r)
+  ∧
+   ∃ icu kernel key_material #i.
+    (KernelTrust( kernel, icu, key_material ) @ #i)
+   ∧
+    ∀ #j. (ICUReply( icu, kernel, key_material ) @ #j) ⇒ ¬(#j < #i)"
+*/
+induction
+  case empty_trace
+  by contradiction /* from formulas */
+next
+  case non_empty_trace
+  simplify
+  solve( (last(#n))  ∥
+         (∀ reset_num #r.
+           (TotalResets( reset_num ) @ #r)
+          ⇒
+           ((last(#r)) ∨
+            (∀ icu kernel key_material #i.
+              (KernelTrust( kernel, icu, key_material ) @ #i)
+             ⇒
+              ((last(#i)) ∨
+               (∃ #j.
+                 (ICUReply( icu, kernel, key_material ) @ #j)
+                ∧
+                 (¬(last(#j))) ∧ (#j < #i)))))) )
+    case case_1
+    solve( !KU( sign(<'icu_reply', n_icu, key_material, n_kernel>, x)
+           ) @ #vk.11 )
+      case c_sign
+      solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+        case initialize_environment
+        solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
+          case kernel_to_icu_1
+          solve( !KernelPrivKey( $Kernel, kernel_priv ) ▶₃ #i )
+            case initialize_environment
+            solve( !CaPub( pk(x.1) ) ▶₄ #i )
+              case initialize_environment
+              solve( !KU( sign(<'icu', icu, pk(x)>, ~ca_priv) ) @ #vk.21 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.27 )
+              next
+                case icu_to_kernel_1_case_1
+                by contradiction /* from formulas */
+              next
+                case icu_to_kernel_1_case_2
+                by contradiction /* from formulas */
+              qed
+            qed
+          qed
+        qed
+      qed
+    next
+      case icu_to_kernel_1_case_1
+      by contradiction /* from formulas */
+    next
+      case icu_to_kernel_1_case_2
+      by contradiction /* from formulas */
+    qed
+  next
+    case case_2
+    solve( (last(#r))  ∥
+           (∀ icu kernel key_material #i.
+             (KernelTrust( kernel, icu, key_material ) @ #i)
+            ⇒
+             ((last(#i)) ∨
+              (∃ #j.
+                (ICUReply( icu, kernel, key_material ) @ #j)
+               ∧
+                (¬(last(#j))) ∧ (#j < #i)))) )
+      case case_1
+      solve( !KU( sign(<'icu_reply', n_icu, key_material, n_kernel>, x)
+             ) @ #vk.11 )
+        case c_sign
+        solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+          case initialize_environment
+          solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
+            case kernel_to_icu_1
+            solve( !KernelPrivKey( $Kernel, kernel_priv ) ▶₃ #i )
+              case initialize_environment
+              solve( !CaPub( pk(x.1) ) ▶₄ #i )
+                case initialize_environment
+                solve( !KU( sign(<'icu', icu, pk(x)>, ~ca_priv) ) @ #vk.21 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.27 )
+                next
+                  case icu_to_kernel_1_case_1
+                  by solve( !KU( ~icu_priv ) @ #vk.23 )
+                next
+                  case icu_to_kernel_1_case_2
+                  by contradiction /* from formulas */
+                qed
+              qed
+            qed
+          qed
+        qed
+      next
+        case icu_to_kernel_1_case_1
+        solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+          case initialize_environment
+          solve( !KU( sign(<'kernel', kernel, pk(x.2)>, ~ca_priv) ) @ #vk.30 )
+            case c_sign
+            by solve( !KU( ~ca_priv ) @ #vk.33 )
+          next
+            case kernel_to_icu_1
+            solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
+              case kernel_to_icu_1
+              solve( !KernelPrivKey( $Kernel, kernel_priv ) ▶₃ #i )
+                case initialize_environment
+                solve( !CaPub( pk(x) ) ▶₄ #i )
+                  case initialize_environment
+                  solve( !KU( sign(<'icu', icu, pk(~icu_priv)>, ~ca_priv) ) @ #vk.25 )
+                    case c_sign
+                    by solve( !KU( ~ca_priv ) @ #vk.33 )
+                  next
+                    case icu_to_kernel_1_case_1
+                    by contradiction /* from formulas */
+                  next
+                    case icu_to_kernel_1_case_2
+                    by contradiction /* from formulas */
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      next
+        case icu_to_kernel_1_case_2
+        by contradiction /* from formulas */
+      qed
+    next
+      case case_2
+      solve( (last(#i))  ∥
+             (∃ #j.
+               (ICUReply( icu, $Kernel, key_material ) @ #j)
+              ∧
+               (¬(last(#j))) ∧ (#j < #i)) )
+        case case_1
+        solve( !KU( sign(<'icu_reply', n_icu, key_material, n_kernel>, x)
+               ) @ #vk.11 )
+          case c_sign
+          solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+            case initialize_environment
+            solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
+              case kernel_to_icu_1
+              solve( !KernelPrivKey( $Kernel, kernel_priv ) ▶₃ #i )
+                case initialize_environment
+                solve( !CaPub( pk(x.1) ) ▶₄ #i )
+                  case initialize_environment
+                  solve( !KU( sign(<'icu', icu, pk(x)>, ~ca_priv) ) @ #vk.21 )
+                    case c_sign
+                    by solve( !KU( ~ca_priv ) @ #vk.27 )
+                  next
+                    case icu_to_kernel_1_case_1
+                    by solve( !KU( ~icu_priv ) @ #vk.23 )
+                  next
+                    case icu_to_kernel_1_case_2
+                    by solve( !KU( ~icu_priv ) @ #vk.23 )
+                  qed
+                qed
+              qed
+            qed
+          qed
+        next
+          case icu_to_kernel_1_case_1
+          solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+            case initialize_environment
+            solve( !KU( sign(<'kernel', kernel, pk(x.2)>, ~ca_priv) ) @ #vk.30 )
+              case c_sign
+              by solve( !KU( ~ca_priv ) @ #vk.33 )
+            next
+              case kernel_to_icu_1
+              solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
+                case kernel_to_icu_1
+                solve( !KernelPrivKey( $Kernel, kernel_priv ) ▶₃ #i )
+                  case initialize_environment
+                  solve( !CaPub( pk(x) ) ▶₄ #i )
+                    case initialize_environment
+                    solve( !KU( sign(<'icu', icu, pk(~icu_priv)>, ~ca_priv) ) @ #vk.25 )
+                      case c_sign
+                      by solve( !KU( ~ca_priv ) @ #vk.33 )
+                    next
+                      case icu_to_kernel_1_case_1
+                      by contradiction /* from formulas */
+                    next
+                      case icu_to_kernel_1_case_2
+                      by contradiction /* from formulas */
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        next
+          case icu_to_kernel_1_case_2
+          solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+            case initialize_environment
+            solve( !KU( sign(<'kernel', kernel, pk(x.2)>, ~ca_priv) ) @ #vk.30 )
+              case c_sign
+              by solve( !KU( ~ca_priv ) @ #vk.33 )
+            next
+              case kernel_to_icu_1
+              solve( Kernel_memory_1( $Kernel, n_kernel ) ▶₀ #i )
+                case kernel_to_icu_1
+                solve( !KernelPrivKey( $Kernel, kernel_priv ) ▶₃ #i )
+                  case initialize_environment
+                  solve( !CaPub( pk(x) ) ▶₄ #i )
+                    case initialize_environment
+                    solve( !KU( sign(<'icu', icu, pk(~icu_priv)>, ~ca_priv) ) @ #vk.25 )
+                      case c_sign
+                      by solve( !KU( ~ca_priv ) @ #vk.33 )
+                    next
+                      case icu_to_kernel_1_case_1
+                      by contradiction /* from formulas */
+                    next
+                      case icu_to_kernel_1_case_2
+                      by contradiction /* from formulas */
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      next
+        case case_2
+        by contradiction /* from formulas */
+      qed
+    qed
+  qed
+qed
+
+lemma icu_done_means_kernel_done [use_induction]:
+  all-traces
+  "∀ num_icu #n.
+    (RegisteredICUs( num_icu ) @ #n) ⇒
+    (∀ reset_num #r.
+      (TotalResets( reset_num ) @ #r) ⇒
+      (∀ icu kernel common_key #i.
+        (ICUDone( icu, kernel, common_key ) @ #i) ⇒
+        (∃ #j. (#j < #i) ∧ (KernelDone( kernel, icu, common_key ) @ #j))))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ num_icu #n.
+  (RegisteredICUs( num_icu ) @ #n)
+ ∧
+  ∃ reset_num #r.
+   (TotalResets( reset_num ) @ #r)
+  ∧
+   ∃ icu kernel common_key #i.
+    (ICUDone( icu, kernel, common_key ) @ #i)
+   ∧
+    ∀ #j. (KernelDone( kernel, icu, common_key ) @ #j) ⇒ ¬(#j < #i)"
+*/
+induction
+  case empty_trace
+  by contradiction /* from formulas */
+next
+  case non_empty_trace
+  simplify
+  solve( (last(#n))  ∥
+         (∀ reset_num #r.
+           (TotalResets( reset_num ) @ #r)
+          ⇒
+           ((last(#r)) ∨
+            (∀ icu kernel common_key #i.
+              (ICUDone( icu, kernel, common_key ) @ #i)
+             ⇒
+              ((last(#i)) ∨
+               (∃ #j.
+                 (KernelDone( kernel, icu, common_key ) @ #j)
+                ∧
+                 (¬(last(#j))) ∧ (#j < #i)))))) )
+    case case_1
+    solve( !KU( sign(<'kernel_reply', dh_kernel_pub, n_icu>, x) ) @ #vk.6 )
+      case c_sign
+      solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+        case initialize_environment
+        solve( Icu_memory_1( $ICU, dh_icu_priv,
+                             <'cert', kernel, pk(x), kernel_sig>, n_icu
+               ) ▶₀ #i )
+          case icu_to_kernel_1_case_1
+          by contradiction /* from formulas */
+        next
+          case icu_to_kernel_1_case_2
+          by contradiction /* from formulas */
+        qed
+      qed
+    next
+      case kernel_to_icu_2
+      solve( !KU( sign(<'icu_reply', n_icu, dh_icu_pub, ~n_kernel>, x.1)
+             ) @ #vk.18 )
+        case c_sign
+        solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+          case initialize_environment
+          solve( Icu_memory_1( $ICU, dh_icu_priv,
+                               <'cert', kernel, pk(~kernel_priv), kernel_sig>, n_icu
+                 ) ▶₀ #i )
+            case icu_to_kernel_1_case_1
+            by contradiction /* from formulas */
+          next
+            case icu_to_kernel_1_case_2
+            by contradiction /* from formulas */
+          qed
+        qed
+      next
+        case icu_to_kernel_1_case_1
+        by contradiction /* from formulas */
+      next
+        case icu_to_kernel_1_case_2
+        by contradiction /* from formulas */
+      qed
+    qed
+  next
+    case case_2
+    solve( (last(#r))  ∥
+           (∀ icu kernel common_key #i.
+             (ICUDone( icu, kernel, common_key ) @ #i)
+            ⇒
+             ((last(#i)) ∨
+              (∃ #j.
+                (KernelDone( kernel, icu, common_key ) @ #j)
+               ∧
+                (¬(last(#j))) ∧ (#j < #i)))) )
+      case case_1
+      solve( !KU( sign(<'kernel_reply', dh_kernel_pub, n_icu>, x) ) @ #vk.6 )
+        case c_sign
+        solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+          case initialize_environment
+          solve( Icu_memory_1( $ICU, dh_icu_priv,
+                               <'cert', kernel, pk(x), kernel_sig>, n_icu
+                 ) ▶₀ #i )
+            case icu_to_kernel_1_case_1
+            solve( !KU( sign(<'icu_nonce', ~n_icu>, x) ) @ #vk.5 )
+              case c_sign
+              solve( !KU( sign(<'kernel', kernel, pk(x)>, ~ca_priv) ) @ #vk.25 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.29 )
+              next
+                case kernel_to_icu_1
+                by solve( !KU( ~kernel_priv ) @ #vk.10 )
+              qed
+            next
+              case kernel_to_icu_2
+              by solve( !KU( ~kernel_priv ) @ #vk.9 )
+            qed
+          next
+            case icu_to_kernel_1_case_2
+            by contradiction /* from formulas */
+          qed
+        qed
+      next
+        case kernel_to_icu_2
+        solve( !KU( sign(<'icu_reply', n_icu, dh_icu_pub, ~n_kernel>, x.1)
+               ) @ #vk.18 )
+          case c_sign
+          solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+            case initialize_environment
+            solve( Icu_memory_1( $ICU, dh_icu_priv,
+                                 <'cert', kernel, pk(~kernel_priv), kernel_sig>, n_icu
+                   ) ▶₀ #i )
+              case icu_to_kernel_1_case_1
+              solve( !KU( sign(<'kernel_nonce', ~n_kernel>, x.1) ) @ #vk.19 )
+                case c_sign
+                solve( !KU( sign(<'icu', icu, pk(x.1)>, ~ca_priv) ) @ #vk.30 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.48 )
+                next
+                  case icu_to_kernel_1_case_1
+                  by solve( !KU( ~icu_priv.1 ) @ #vk.33 )
+                next
+                  case icu_to_kernel_1_case_2
+                  by contradiction /* from formulas */
+                qed
+              next
+                case icu_to_kernel_1_case_1
+                by solve( !KU( ~icu_priv.1 ) @ #vk.32 )
+              next
+                case icu_to_kernel_1_case_2
+                by contradiction /* from formulas */
+              next
+                case kernel_to_icu_1
+                by solve( !KU( ~kernel_priv ) @ #vk.32 )
+              qed
+            next
+              case icu_to_kernel_1_case_2
+              by contradiction /* from formulas */
+            qed
+          qed
+        next
+          case icu_to_kernel_1_case_1
+          solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+            case initialize_environment
+            solve( Icu_memory_1( $ICU, dh_icu_priv,
+                                 <'cert', kernel, pk(~kernel_priv), kernel_sig>, ~n_icu
+                   ) ▶₀ #i )
+              case icu_to_kernel_1
+              solve( !KU( sign(<'icu', icu, pk(~icu_priv.1)>, ~ca_priv) ) @ #vk.28 )
+                case c_sign
+                by solve( !KU( ~ca_priv ) @ #vk.40 )
+              next
+                case icu_to_kernel_1_case_1
+                solve( !KU( sign(<'kernel', kernel, pk(~kernel_priv)>, ~ca_priv)
+                       ) @ #vk.37 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.40 )
+                next
+                  case kernel_to_icu_1
+                  by contradiction /* from formulas */
+                qed
+              next
+                case icu_to_kernel_1_case_2
+                by contradiction /* from formulas */
+              qed
+            qed
+          qed
+        next
+          case icu_to_kernel_1_case_2
+          by contradiction /* from formulas */
+        qed
+      qed
+    next
+      case case_2
+      solve( (last(#i))  ∥
+             (∃ #j.
+               (KernelDone( kernel, $ICU, common_key ) @ #j)
+              ∧
+               (¬(last(#j))) ∧ (#j < #i)) )
+        case case_1
+        solve( !KU( sign(<'kernel_reply', dh_kernel_pub, n_icu>, x) ) @ #vk.6 )
+          case c_sign
+          solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+            case initialize_environment
+            solve( Icu_memory_1( $ICU, dh_icu_priv,
+                                 <'cert', kernel, pk(x), kernel_sig>, n_icu
+                   ) ▶₀ #i )
+              case icu_to_kernel_1_case_1
+              solve( !KU( sign(<'icu_nonce', ~n_icu>, x) ) @ #vk.5 )
+                case c_sign
+                solve( !KU( sign(<'kernel', kernel, pk(x)>, ~ca_priv) ) @ #vk.25 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.29 )
+                next
+                  case kernel_to_icu_1
+                  by solve( !KU( ~kernel_priv ) @ #vk.10 )
+                qed
+              next
+                case kernel_to_icu_2
+                by solve( !KU( ~kernel_priv ) @ #vk.9 )
+              qed
+            next
+              case icu_to_kernel_1_case_2
+              solve( !KU( sign(<'icu_nonce', ~n_icu>, x) ) @ #vk.5 )
+                case c_sign
+                solve( !KU( sign(<'kernel', kernel, pk(x)>, ~ca_priv) ) @ #vk.25 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.29 )
+                next
+                  case kernel_to_icu_1
+                  by solve( !KU( ~kernel_priv ) @ #vk.10 )
+                qed
+              next
+                case kernel_to_icu_2
+                by solve( !KU( ~kernel_priv ) @ #vk.9 )
+              qed
+            qed
+          qed
+        next
+          case kernel_to_icu_2
+          solve( !KU( sign(<'icu_reply', n_icu, dh_icu_pub, ~n_kernel>, x.1)
+                 ) @ #vk.18 )
+            case c_sign
+            solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+              case initialize_environment
+              solve( Icu_memory_1( $ICU, dh_icu_priv,
+                                   <'cert', kernel, pk(~kernel_priv), kernel_sig>, n_icu
+                     ) ▶₀ #i )
+                case icu_to_kernel_1_case_1
+                solve( !KU( sign(<'kernel_nonce', ~n_kernel>, x.1) ) @ #vk.19 )
+                  case c_sign
+                  solve( !KU( sign(<'icu', icu, pk(x.1)>, ~ca_priv) ) @ #vk.30 )
+                    case c_sign
+                    by solve( !KU( ~ca_priv ) @ #vk.48 )
+                  next
+                    case icu_to_kernel_1_case_1
+                    by solve( !KU( ~icu_priv.1 ) @ #vk.33 )
+                  next
+                    case icu_to_kernel_1_case_2
+                    by solve( !KU( ~icu_priv.1 ) @ #vk.33 )
+                  qed
+                next
+                  case icu_to_kernel_1_case_1
+                  by solve( !KU( ~icu_priv.1 ) @ #vk.32 )
+                next
+                  case icu_to_kernel_1_case_2
+                  by solve( !KU( ~icu_priv.1 ) @ #vk.32 )
+                next
+                  case kernel_to_icu_1
+                  by solve( !KU( ~kernel_priv ) @ #vk.32 )
+                qed
+              next
+                case icu_to_kernel_1_case_2
+                solve( !KU( sign(<'kernel_nonce', ~n_kernel>, x.1) ) @ #vk.19 )
+                  case c_sign
+                  solve( !KU( sign(<'icu', icu, pk(x.1)>, ~ca_priv) ) @ #vk.30 )
+                    case c_sign
+                    by solve( !KU( ~ca_priv ) @ #vk.48 )
+                  next
+                    case icu_to_kernel_1_case_1
+                    by solve( !KU( ~icu_priv.1 ) @ #vk.33 )
+                  next
+                    case icu_to_kernel_1_case_2
+                    by solve( !KU( ~icu_priv.1 ) @ #vk.33 )
+                  qed
+                next
+                  case icu_to_kernel_1_case_1
+                  by solve( !KU( ~icu_priv.1 ) @ #vk.32 )
+                next
+                  case icu_to_kernel_1_case_2
+                  by solve( !KU( ~icu_priv.1 ) @ #vk.32 )
+                next
+                  case kernel_to_icu_1
+                  by solve( !KU( ~kernel_priv ) @ #vk.32 )
+                qed
+              qed
+            qed
+          next
+            case icu_to_kernel_1_case_1
+            solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+              case initialize_environment
+              solve( Icu_memory_1( $ICU, dh_icu_priv,
+                                   <'cert', kernel, pk(~kernel_priv), kernel_sig>, ~n_icu
+                     ) ▶₀ #i )
+                case icu_to_kernel_1
+                solve( !KU( sign(<'icu', icu, pk(~icu_priv.1)>, ~ca_priv) ) @ #vk.28 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.40 )
+                next
+                  case icu_to_kernel_1_case_1
+                  solve( !KU( sign(<'kernel', kernel, pk(~kernel_priv)>, ~ca_priv)
+                         ) @ #vk.37 )
+                    case c_sign
+                    by solve( !KU( ~ca_priv ) @ #vk.40 )
+                  next
+                    case kernel_to_icu_1
+                    by contradiction /* from formulas */
+                  qed
+                next
+                  case icu_to_kernel_1_case_2
+                  solve( !KU( sign(<'kernel', kernel, pk(~kernel_priv)>, ~ca_priv)
+                         ) @ #vk.39 )
+                    case c_sign
+                    by solve( !KU( ~ca_priv ) @ #vk.51 )
+                  next
+                    case kernel_to_icu_1
+                    by contradiction /* from formulas */
+                  qed
+                qed
+              qed
+            qed
+          next
+            case icu_to_kernel_1_case_2
+            solve( !CaPriv( ~ca_priv ) ▶₁ #n )
+              case initialize_environment
+              solve( Icu_memory_1( $ICU, dh_icu_priv,
+                                   <'cert', kernel, pk(~kernel_priv), kernel_sig>, ~n_icu
+                     ) ▶₀ #i )
+                case icu_to_kernel_1
+                solve( !KU( sign(<'icu', icu, pk(~icu_priv.1)>, ~ca_priv) ) @ #vk.28 )
+                  case c_sign
+                  by solve( !KU( ~ca_priv ) @ #vk.40 )
+                next
+                  case icu_to_kernel_1_case_1
+                  solve( !KU( sign(<'kernel', kernel, pk(~kernel_priv)>, ~ca_priv)
+                         ) @ #vk.39 )
+                    case c_sign
+                    by solve( !KU( ~ca_priv ) @ #vk.51 )
+                  next
+                    case kernel_to_icu_1
+                    by contradiction /* from formulas */
+                  qed
+                next
+                  case icu_to_kernel_1_case_2
+                  solve( !KU( sign(<'kernel', kernel, pk(~kernel_priv)>, ~ca_priv)
+                         ) @ #vk.39 )
+                    case c_sign
+                    by solve( !KU( ~ca_priv ) @ #vk.51 )
+                  next
+                    case kernel_to_icu_1
+                    by contradiction /* from formulas */
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      next
+        case case_2
+        by contradiction /* from formulas */
+      qed
+    qed
+  qed
+qed
+
+/* All well-formedness checks were successful. */
+
+end
